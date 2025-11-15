@@ -130,6 +130,12 @@ It simply checks if the returned `OptionId` is the one used by the mod, and if i
 
 ## Packaging your mod
 
+### Enabling ChunkID assignments
+
+Before you continue, ensure you have **Edit > Editor Preferences > General > Experimental > Allow ChunkID Assignments** checked. Without this, the **Assign to Chunk...** option will not appear.
+
+### Assigning assets to chunks
+
 In this project, we use pak chunks to package your mod files into `.pak` mods.
 
 In the editor, first select all the assets in your mod's folder (shift click or ctrl click, standard stuff works), then right click the highlighted assets and hover over `Asset Actions` -> `Assign to Chunk...` and click on it.
