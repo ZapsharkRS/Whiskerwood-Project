@@ -42,6 +42,8 @@ UPROPERTY(EditAnywhere)
 UPROPERTY(EditAnywhere)
     class UMasterSyncManager *masterSync;
 UPROPERTY(EditAnywhere)
+    class UModManager *modMan;
+UPROPERTY(EditAnywhere)
     FModApiState state;
 ```
 
@@ -58,6 +60,13 @@ UFUNCTION(BlueprintPure, meta = (WorldContext = "worldContext"), Category = "Mod
 // Set the pool of possible whisker names from which new whiskers will be randomly named
 UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = "ModAPI")
     void SetWhiskerNamePool(TArray<FString> names);
+
+// Add Data Table to the moddable table lookup
+UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = "ModAPI")
+    void AddDataTable(class UObject *worldContext, FName datatableName, class UDataTable *table);
+
+UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = "ModAPI")
+    bool HasDataTable(class UObject *worldContext, FName datatableName);
 
 // Returns the list of all data tables accessible through the modapi's read and write calls
 UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = "ModAPI")
@@ -79,6 +88,10 @@ UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = 
 // Write the value of a data table entry. See modapi's ListDataTables to get an updated listing of exposed data tables
 UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = "ModAPI")
     bool WriteDataTableValue(class UObject *worldContext, FName datatableName, FName rowId, FName columnName, FString valueStringified);
+
+// Add an empty row at the rowId. Does nothing if the row already exists
+UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = "ModAPI")
+    bool AddDataTableRow(class UObject *worldContext, FName datatableName, FName rowId);
 
 // Add a new option to the Mod tab of the settings menu
 // In the optionDisplayName make sure to prepend your mod's name so players know which option is yours
@@ -103,6 +116,14 @@ UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = 
 // Avoid calling often as the file read is sync and will cause a frame stutter.
 UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = "ModAPI")
     FString ReadModTextFile(class UObject *worldContext, FString modName, FString filename);
+
+// Read a csv text file from %localappdata%/Whiskerwood/Mods/MODNAME/lang.csv
+// The CSV should have the first row as a header. The first column should be the string id, the second column the translated text
+UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = "ModAPI")
+    bool AddNewTranslation(class UObject *worldContext, FString modId, FString translationName);
+    
+UFUNCTION(BlueprintCallable, meta = (WorldContext = "worldContext"), Category = "ModAPI")
+    void DumpEnglishToLogFolder(class UObject *worldContext);
 ```
 
 ### Delegates
@@ -113,6 +134,7 @@ These are delegates that you can bind to in your mod, then fire an event from th
 DECLARE_DYNAMIC_MULTICAST_DELEGATE(FModAPI_OnEvent);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FModAPI_OnActorSpawned, AActor *, actor);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FModAPI_OnOptionChange, FString, optionId, FString, value);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FModAPI_OnDayStart, int32, day);
 
 UPROPERTY(BlueprintAssignable)
     FModAPI_OnEvent onLoadingFinished;
@@ -124,6 +146,8 @@ UPROPERTY(BlueprintAssignable)
     FModAPI_OnActorSpawned onWhiskerSpawned;
 UPROPERTY(BlueprintAssignable)
     FModAPI_OnOptionChange onOptionChanged;
+UPROPERTY(BlueprintAssignable)
+    FModAPI_OnDayStart onDayStart;
 ```
 
 For example, in `Content/Mods/CopperSlides/BP_MapLoad`, it is binding on two delegates:
