@@ -4,14 +4,15 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "WhiskerwoodFileIOLibrary.generated.h"
 
-#if WITH_EDITOR
-
 /**
- * Editor-only file/directory IO helpers that are hard-limited
+ * File/directory IO helpers that are hard-limited
  * so that any write/delete destination must contain "Whiskerwood".
  *
  * Intended for Editor Utility Widgets & other editor tools that manage
  * Whiskerwood mod .pak files and metadata.
+ *
+ * NOTE: Class is always compiled so packaging (UnrealGame target) works.
+ * Actual destructive behavior is guarded in the .cpp with WITH_EDITOR.
  */
 UCLASS()
 class WHISKERWOOD_API UWhiskerwoodFileIOLibrary : public UBlueprintFunctionLibrary
@@ -20,23 +21,32 @@ class WHISKERWOOD_API UWhiskerwoodFileIOLibrary : public UBlueprintFunctionLibra
 
 public:
 
-    /** 
+    /**
+     * Returns the Whiskerwood mods directory under the current user's Local AppData.
+     *
+     * Example (Windows):
+     *   C:/Users/<User>/AppData/Local/Whiskerwood/Saved/mods
+     */
+    UFUNCTION(BlueprintPure, Category="Whiskerwood|File IO", meta=(DevelopmentOnly))
+    static FString GetWhiskerwoodModsDirectory();
+
+    /**
      * Deletes a file on disk, but ONLY if the normalized path contains "Whiskerwood".
      */
-    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO")
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO", meta=(DevelopmentOnly))
     static bool DeleteWhiskerwoodFile(const FString& FilePath);
 
     /**
      * Recursively deletes a directory on disk, but ONLY if the normalized path contains "Whiskerwood".
      */
-    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO")
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO", meta=(DevelopmentOnly))
     static bool DeleteWhiskerwoodDirectory(const FString& DirectoryPath);
 
     /**
      * Ensures that a directory (and parents) exists.
      * Only succeeds if the normalized path contains "Whiskerwood".
      */
-    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO")
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO", meta=(DevelopmentOnly))
     static bool EnsureWhiskerwoodDirectory(const FString& DirectoryPath);
 
     /**
@@ -47,7 +57,7 @@ public:
      * @param DestFilePath Full path to the file to copy to (must contain "Whiskerwood").
      * @param bOverwriteExisting If true, will overwrite an existing file at destination.
      */
-    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO")
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO", meta=(DevelopmentOnly))
     static bool CopyWhiskerwoodFile(const FString& SourceFilePath, const FString& DestFilePath, bool bOverwriteExisting);
 
     /**
@@ -58,8 +68,6 @@ public:
      * @param Text Text content to write.
      * @param bAllowOverwrite If false and the file already exists, this will fail.
      */
-    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO")
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|File IO", meta=(DevelopmentOnly))
     static bool WriteWhiskerwoodTextFile(const FString& FilePath, const FString& Text, bool bAllowOverwrite);
 };
-
-#endif // WITH_EDITOR 

@@ -1,64 +1,83 @@
 ﻿#include "WhiskerwoodFileIOLibrary.h"
 
-#if WITH_EDITOR
-
-#include "HAL/PlatformFileManager.h"
 #include "Misc/Paths.h"
 #include "Misc/FileHelper.h"
+#include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformMisc.h"
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Internal helpers (compiled for all builds; they themselves are safe)
 // ---------------------------------------------------------------------------
 
-// Normalize path and ensure it contains "Whiskerwood" somewhere (case-insensitive).
-// Used for any DESTINATION path for writes/deletes. 
-static bool IsWhiskerwoodSafeDestPath(const FString& InPath, FString& OutNormalizedPath)
+namespace
 {
-    OutNormalizedPath = InPath;
-
-    // Normalize slashes and case
-    // Example: C:/Users/.../Whiskerwood/... -> c:/users/.../whiskerwood/...
-    FPaths::MakeStandardFilename(OutNormalizedPath);
-
-    const FString SafetyToken = TEXT("whiskerwood");
-
-    if (!OutNormalizedPath.Contains(SafetyToken, ESearchCase::IgnoreCase, ESearchDir::FromStart))
+    // Normalize path and ensure it contains "Whiskerwood" somewhere (case-insensitive).
+    static bool IsWhiskerwoodSafeDestPath(const FString& InPath, FString& OutNormalizedPath)
     {
-        UE_LOG(LogTemp, Warning,
-            TEXT("WhiskerwoodFileIOLibrary: Refusing to operate on destination path '%s' because it does not contain '%s'."),
-            *OutNormalizedPath,
-            *SafetyToken
-        );
-        return false;
+        OutNormalizedPath = InPath;
+
+        // Normalize slashes and case
+        FPaths::MakeStandardFilename(OutNormalizedPath);
+
+        const FString SafetyToken = TEXT("whiskerwood");
+
+        if (OutNormalizedPath.IsEmpty())
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("WhiskerwoodFileIOLibrary: Refusing to operate on an empty destination path."));
+            return false;
+        }
+
+        if (!OutNormalizedPath.Contains(SafetyToken, ESearchCase::IgnoreCase, ESearchDir::FromStart))
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("WhiskerwoodFileIOLibrary: Refusing to operate on destination path '%s' because it does not contain '%s'."),
+                *OutNormalizedPath,
+                *SafetyToken);
+            return false;
+        }
+
+        return true;
     }
 
-    if (OutNormalizedPath.IsEmpty())
+    static bool IsWhiskerwoodSafeDeletePath(const FString& InPath, FString& OutNormalizedPath)
     {
-        UE_LOG(LogTemp, Warning,
-            TEXT("WhiskerwoodFileIOLibrary: Refusing to operate on an empty destination path."));
-        return false;
+        return IsWhiskerwoodSafeDestPath(InPath, OutNormalizedPath);
+    }
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+FString UWhiskerwoodFileIOLibrary::GetWhiskerwoodModsDirectory()
+{
+#if WITH_EDITOR
+    // Prefer LOCALAPPDATA to avoid the Documents/OneDrive issue.
+    FString LocalAppData = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+
+    if (LocalAppData.IsEmpty())
+    {
+        // Fallback: use user settings dir and step up a bit, but this should rarely happen.
+        LocalAppData = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir());
     }
 
-    return true;
+    FString ModsDir = FPaths::Combine(LocalAppData, TEXT("Whiskerwood"), TEXT("Saved"), TEXT("mods"));
+    FPaths::NormalizeDirectoryName(ModsDir);
+    return ModsDir;
+#else
+    // In non-editor builds, either return empty or the same value
+    // (but these functions are meta=(DevelopmentOnly) anyway).
+    return FString();
+#endif
 }
-
-// For delete operations we use the same safety rules as other destructive writes.
-// If you ever want different rules, you can split this into a dedicated helper.
-static bool IsWhiskerwoodSafeDeletePath(const FString& InPath, FString& OutNormalizedPath)
-{
-    return IsWhiskerwoodSafeDestPath(InPath, OutNormalizedPath);
-}
-
-// ---------------------------------------------------------------------------
-// Delete operations
-// ---------------------------------------------------------------------------
 
 bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodFile(const FString& FilePath)
 {
+#if WITH_EDITOR
     FString NormalizedPath;
     if (!IsWhiskerwoodSafeDeletePath(FilePath, NormalizedPath))
     {
-        // Failed safety check
         return false;
     }
 
@@ -68,8 +87,7 @@ bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodFile(const FString& FilePath)
     {
         UE_LOG(LogTemp, Warning,
             TEXT("WhiskerwoodFileIOLibrary: File does not exist, cannot delete. Path: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
         return false;
     }
 
@@ -79,26 +97,29 @@ bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodFile(const FString& FilePath)
     {
         UE_LOG(LogTemp, Error,
             TEXT("WhiskerwoodFileIOLibrary: Failed to delete file: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
     }
     else
     {
         UE_LOG(LogTemp, Log,
             TEXT("WhiskerwoodFileIOLibrary: Successfully deleted file: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
     }
 
     return bDeleted;
+#else
+    UE_LOG(LogTemp, Warning,
+        TEXT("DeleteWhiskerwoodFile is editor-only and does nothing in non-editor builds."));
+    return false;
+#endif
 }
 
 bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodDirectory(const FString& DirectoryPath)
 {
+#if WITH_EDITOR
     FString NormalizedPath;
     if (!IsWhiskerwoodSafeDeletePath(DirectoryPath, NormalizedPath))
     {
-        // Failed safety check
         return false;
     }
 
@@ -108,8 +129,7 @@ bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodDirectory(const FString& Direct
     {
         UE_LOG(LogTemp, Warning,
             TEXT("WhiskerwoodFileIOLibrary: Directory does not exist, cannot delete. Path: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
         return false;
     }
 
@@ -119,26 +139,26 @@ bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodDirectory(const FString& Direct
     {
         UE_LOG(LogTemp, Error,
             TEXT("WhiskerwoodFileIOLibrary: Failed to recursively delete directory: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
     }
     else
     {
         UE_LOG(LogTemp, Log,
             TEXT("WhiskerwoodFileIOLibrary: Successfully recursively deleted directory: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
     }
 
     return bDeleted;
+#else
+    UE_LOG(LogTemp, Warning,
+        TEXT("DeleteWhiskerwoodDirectory is editor-only and does nothing in non-editor builds."));
+    return false;
+#endif
 }
-
-// ---------------------------------------------------------------------------
-// Directory creation
-// ---------------------------------------------------------------------------
 
 bool UWhiskerwoodFileIOLibrary::EnsureWhiskerwoodDirectory(const FString& DirectoryPath)
 {
+#if WITH_EDITOR
     FString NormalizedPath;
     if (!IsWhiskerwoodSafeDestPath(DirectoryPath, NormalizedPath))
     {
@@ -151,8 +171,7 @@ bool UWhiskerwoodFileIOLibrary::EnsureWhiskerwoodDirectory(const FString& Direct
     {
         UE_LOG(LogTemp, Verbose,
             TEXT("WhiskerwoodFileIOLibrary: Directory already exists: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
         return true;
     }
 
@@ -162,29 +181,28 @@ bool UWhiskerwoodFileIOLibrary::EnsureWhiskerwoodDirectory(const FString& Direct
     {
         UE_LOG(LogTemp, Error,
             TEXT("WhiskerwoodFileIOLibrary: Failed to create directory tree: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
     }
     else
     {
         UE_LOG(LogTemp, Log,
             TEXT("WhiskerwoodFileIOLibrary: Successfully created directory tree: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
     }
 
     return bCreated;
+#else
+    UE_LOG(LogTemp, Warning,
+        TEXT("EnsureWhiskerwoodDirectory is editor-only and does nothing in non-editor builds."));
+    return false;
+#endif
 }
-
-// ---------------------------------------------------------------------------
-/* Copy file (source → Whiskerwood destination) */
-// ---------------------------------------------------------------------------
 
 bool UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(const FString& SourceFilePath, const FString& DestFilePath, bool bOverwriteExisting)
 {
+#if WITH_EDITOR
     IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 
-    // Normalize source; we allow it to be anywhere, but ensure it's not empty.
     FString NormalizedSource = SourceFilePath;
     FPaths::MakeStandardFilename(NormalizedSource);
 
@@ -199,29 +217,24 @@ bool UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(const FString& SourceFilePat
     {
         UE_LOG(LogTemp, Warning,
             TEXT("WhiskerwoodFileIOLibrary: Source file does not exist, cannot copy. Path: '%s'"),
-            *NormalizedSource
-        );
+            *NormalizedSource);
         return false;
     }
 
-    // Check safety & normalize destination.
     FString NormalizedDest;
     if (!IsWhiskerwoodSafeDestPath(DestFilePath, NormalizedDest))
     {
         return false;
     }
 
-    // If overwrite is not allowed and dest exists, bail.
     if (!bOverwriteExisting && PlatformFile.FileExists(*NormalizedDest))
     {
         UE_LOG(LogTemp, Warning,
             TEXT("WhiskerwoodFileIOLibrary: Destination file already exists and overwrite is disabled. Dest: '%s'"),
-            *NormalizedDest
-        );
+            *NormalizedDest);
         return false;
     }
 
-    // Ensure destination directory exists.
     const FString DestDir = FPaths::GetPath(NormalizedDest);
     if (!DestDir.IsEmpty())
     {
@@ -230,14 +243,11 @@ bool UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(const FString& SourceFilePat
         {
             UE_LOG(LogTemp, Error,
                 TEXT("WhiskerwoodFileIOLibrary: Failed to ensure destination directory for copy. DestDir: '%s'"),
-                *NormalizedDestDir
-            );
+                *NormalizedDestDir);
             return false;
         }
     }
 
-    // Unreal's CopyFile just uses source + dest; overwrite is controlled
-    // by whether you allow an existing file to remain in place.
     const bool bCopied = PlatformFile.CopyFile(*NormalizedDest, *NormalizedSource);
 
     if (!bCopied)
@@ -245,27 +255,27 @@ bool UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(const FString& SourceFilePat
         UE_LOG(LogTemp, Error,
             TEXT("WhiskerwoodFileIOLibrary: Failed to copy file from '%s' to '%s'"),
             *NormalizedSource,
-            *NormalizedDest
-        );
+            *NormalizedDest);
     }
     else
     {
         UE_LOG(LogTemp, Log,
             TEXT("WhiskerwoodFileIOLibrary: Successfully copied file from '%s' to '%s'"),
             *NormalizedSource,
-            *NormalizedDest
-        );
+            *NormalizedDest);
     }
 
     return bCopied;
+#else
+    UE_LOG(LogTemp, Warning,
+        TEXT("CopyWhiskerwoodFile is editor-only and does nothing in non-editor builds."));
+    return false;
+#endif
 }
-
-// ---------------------------------------------------------------------------
-// Write text file (e.g. simple metadata file next to .pak)
-// ---------------------------------------------------------------------------
 
 bool UWhiskerwoodFileIOLibrary::WriteWhiskerwoodTextFile(const FString& FilePath, const FString& Text, bool bAllowOverwrite)
 {
+#if WITH_EDITOR
     FString NormalizedPath;
     if (!IsWhiskerwoodSafeDestPath(FilePath, NormalizedPath))
     {
@@ -278,12 +288,10 @@ bool UWhiskerwoodFileIOLibrary::WriteWhiskerwoodTextFile(const FString& FilePath
     {
         UE_LOG(LogTemp, Warning,
             TEXT("WhiskerwoodFileIOLibrary: File already exists and overwrite is disabled. Path: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
         return false;
     }
 
-    // Ensure directory exists
     const FString Dir = FPaths::GetPath(NormalizedPath);
     if (!Dir.IsEmpty())
     {
@@ -292,8 +300,7 @@ bool UWhiskerwoodFileIOLibrary::WriteWhiskerwoodTextFile(const FString& FilePath
         {
             UE_LOG(LogTemp, Error,
                 TEXT("WhiskerwoodFileIOLibrary: Failed to ensure directory for write. Dir: '%s'"),
-                *NormalizedDir
-            );
+                *NormalizedDir);
             return false;
         }
     }
@@ -302,25 +309,25 @@ bool UWhiskerwoodFileIOLibrary::WriteWhiskerwoodTextFile(const FString& FilePath
         Text,
         *NormalizedPath,
         FFileHelper::EEncodingOptions::AutoDetect
-        // Using default FileManager and no special flags
     );
 
     if (!bSaved)
     {
         UE_LOG(LogTemp, Error,
             TEXT("WhiskerwoodFileIOLibrary: Failed to write text file: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
     }
     else
     {
         UE_LOG(LogTemp, Log,
             TEXT("WhiskerwoodFileIOLibrary: Successfully wrote text file: '%s'"),
-            *NormalizedPath
-        );
+            *NormalizedPath);
     }
 
     return bSaved;
+#else
+    UE_LOG(LogTemp, Warning,
+        TEXT("WriteWhiskerwoodTextFile is editor-only and does nothing in non-editor builds."));
+    return false;
+#endif
 }
-
-#endif // WITH_EDITOR
