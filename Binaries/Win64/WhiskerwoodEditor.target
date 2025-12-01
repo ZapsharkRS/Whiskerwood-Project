@@ -142,18 +142,6 @@
 			"Type": "RequiredResource"
 		},
 		{
-			"Path": "$(ProjectDir)/Plugins/WhiskerwoodModTools/Binaries/Win64/UnrealEditor-WhiskerwoodModTools.dll",
-			"Type": "DynamicLibrary"
-		},
-		{
-			"Path": "$(ProjectDir)/Plugins/WhiskerwoodModTools/Binaries/Win64/UnrealEditor-WhiskerwoodModTools.pdb",
-			"Type": "SymbolFile"
-		},
-		{
-			"Path": "$(ProjectDir)/Plugins/WhiskerwoodModTools/Binaries/Win64/UnrealEditor.modules",
-			"Type": "RequiredResource"
-		},
-		{
 			"Path": "$(EngineDir)/Binaries/ThirdParty/USD/UsdResources/Win64/plugins/ar/resources/plugInfo.json",
 			"Type": "RequiredResource"
 		},
@@ -7374,6 +7362,30 @@
 			"Type": "RequiredResource"
 		},
 		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/DarkerNo914d061a7b62V11/Binaries/Win64/UnrealEditor-DarkerNodes.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/DarkerNo914d061a7b62V11/Binaries/Win64/UnrealEditor-DarkerNodes.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/DarkerNo914d061a7b62V11/Binaries/Win64/UnrealEditor.modules",
+			"Type": "RequiredResource"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/Electron5474ffd7dc22V15/Binaries/Win64/UnrealEditor-ElectronicNodes.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/Electron5474ffd7dc22V15/Binaries/Win64/UnrealEditor-ElectronicNodes.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/Electron5474ffd7dc22V15/Binaries/Win64/UnrealEditor.modules",
+			"Type": "RequiredResource"
+		},
+		{
 			"Path": "$(EngineDir)/Plugins/Marketplace/FabLauncher/Binaries/Win64/UnrealEditor-FabLauncher.dll",
 			"Type": "DynamicLibrary"
 		},
@@ -7399,6 +7411,30 @@
 		},
 		{
 			"Path": "$(EngineDir)/Plugins/Marketplace/FabLauncher/Binaries/Win64/UnrealEditor.modules",
+			"Type": "RequiredResource"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/FlatNode18f35655bb7eV9/Binaries/Win64/UnrealEditor-FlatNodes.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/FlatNode18f35655bb7eV9/Binaries/Win64/UnrealEditor-FlatNodes.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/FlatNode18f35655bb7eV9/Binaries/Win64/UnrealEditor.modules",
+			"Type": "RequiredResource"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/Property1a9be8a18b7eV17/Binaries/Win64/UnrealEditor-PTMTool.dll",
+			"Type": "DynamicLibrary"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/Property1a9be8a18b7eV17/Binaries/Win64/UnrealEditor-PTMTool.pdb",
+			"Type": "SymbolFile"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/Property1a9be8a18b7eV17/Binaries/Win64/UnrealEditor.modules",
 			"Type": "RequiredResource"
 		},
 		{
@@ -9001,10 +9037,6 @@
 		},
 		{
 			"Path": "$(ProjectDir)/Plugins/Suzie/Suzie.uplugin",
-			"Type": "UFS"
-		},
-		{
-			"Path": "$(ProjectDir)/Plugins/WhiskerwoodModTools/WhiskerwoodModTools.uplugin",
 			"Type": "UFS"
 		},
 		{
@@ -34160,7 +34192,23 @@
 			"Type": "UFS"
 		},
 		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/DarkerNo914d061a7b62V11/DarkerNodes.uplugin",
+			"Type": "UFS"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/Electron5474ffd7dc22V15/ElectronicNodes.uplugin",
+			"Type": "UFS"
+		},
+		{
 			"Path": "$(EngineDir)/Plugins/Marketplace/FabLauncher/FabLauncher.uplugin",
+			"Type": "UFS"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/FlatNode18f35655bb7eV9/FlatNodes.uplugin",
+			"Type": "UFS"
+		},
+		{
+			"Path": "$(EngineDir)/Plugins/Marketplace/Property1a9be8a18b7eV17/PTMTool.uplugin",
 			"Type": "UFS"
 		},
 		{
@@ -34550,6 +34598,7 @@
 		"CryptoKeys",
 		"CurveEditorTools",
 		"CustomMeshComponent",
+		"DarkerNodes",
 		"DataValidation",
 		"Dataflow",
 		"DatasmithContent",
@@ -34562,6 +34611,7 @@
 		"EditorPerformance",
 		"EditorScriptingUtilities",
 		"EditorTelemetry",
+		"ElectronicNodes",
 		"EngineAssetDefinitions",
 		"EngineCameras",
 		"EnhancedInput",
@@ -34571,6 +34621,7 @@
 		"FabLauncher",
 		"FacialAnimation",
 		"FastBuildController",
+		"FlatNodes",
 		"Fracture",
 		"FullBodyIK",
 		"GLTFExporter",
@@ -34639,6 +34690,7 @@
 		"OnlineSubsystemNull",
 		"OnlineSubsystemUtils",
 		"OodleNetwork",
+		"PTMTool",
 		"Paper2D",
 		"PerforceSourceControl",
 		"PixWinPlugin",
@@ -34698,7 +34750,6 @@
 		"WaveTable",
 		"WebMMedia",
 		"WebMMoviePlayer",
-		"WhiskerwoodModTools",
 		"WindowsDeviceProfileSelector",
 		"WindowsMoviePlayer",
 		"WmfMedia",
