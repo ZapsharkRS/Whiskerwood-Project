@@ -1,0 +1,4363 @@
+/* The following source code are 26 files from the language C++ merged into one file for AI reviewing purposes. Look for header comments that begin with the comment character(s) from the above language followed by the text -BEGIN MERGED FILE: and it will have the relative path and filename, followed by the code, and at the end of that file, it say -END MERGED FILE: and the relative path and filename. Each directory will also begin with -BEGIN MERGED DIRECTORY: followed by the relative path. Once all files from not only in that directory, but also sub directories have been outputted, it will have -END MERGED DIRECTORY: followed by the relative path. All sub directories will also have this. Treat all files as if they are individual files. This is only a convenient means to show you an entire project with just one file. Do not mention the merged file here. Only reference the file and/or relative path. */
+
+// -BEGIN MERGED DIRECTORY: .
+// -BEGIN MERGED DIRECTORY: Private
+// -BEGIN MERGED FILE: Private/PAL_WhiskerwoodModSettings.cpp
+// Private/PAL_WhiskerwoodModSettings.cpp
+
+#include "PAL_WhiskerwoodModSettings.h"
+#include "Misc/Paths.h"
+#include "Engine/AssetManager.h"  // For FPrimaryAssetId / FPrimaryAssetType / GetPrimaryAssetRules
+
+UPAL_WhiskerwoodModSettings::UPAL_WhiskerwoodModSettings()
+{
+    // Allow manually marking assets
+    bCookAll = true;
+
+    // User will fill these, but here are safe defaults
+    if (ModDirName.IsEmpty())
+    {
+        ModDirName = TEXT("NewMod");
+    }
+
+    // Primary Asset Label defaults
+    bLabelAssetsInMyDirectory = true;
+}
+
+FPrimaryAssetId UPAL_WhiskerwoodModSettings::GetPrimaryAssetId() const
+{
+    // Force type to match AssetManagerSettings PrimaryAssetTypesToScan entry:
+    // PrimaryAssetType="WhiskerwoodModSettings"
+    static const FPrimaryAssetType ModType(TEXT("WhiskerwoodModSettings"));
+    return FPrimaryAssetId(ModType, GetFName());
+}
+
+#if WITH_EDITOR
+
+void UPAL_WhiskerwoodModSettings::PostLoad()
+{
+    Super::PostLoad();
+
+#if WITH_EDITORONLY_DATA
+    // Migration: if this PAL came from an old version that used LegacyChunkID,
+    // and the real engine Rules.ChunkId is still at its default, copy the value over.
+    if (LegacyChunkID > 0 && Rules.ChunkId <= 0)
+    {
+        Rules.ChunkId = LegacyChunkID;
+    }
+#endif
+}
+
+void UPAL_WhiskerwoodModSettings::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent)
+{
+    Super::PostEditChangeProperty(PropertyChangedEvent);
+
+#if WITH_EDITORONLY_DATA
+    if (FProperty* ChangedProp = PropertyChangedEvent.Property)
+    {
+        const FName PropName = ChangedProp->GetFName();
+
+        // If someone still edits the old LegacyChunkID, keep Rules.ChunkId in sync.
+        if (PropName == GET_MEMBER_NAME_CHECKED(UPAL_WhiskerwoodModSettings, LegacyChunkID))
+        {
+            if (LegacyChunkID > 0)
+            {
+                Rules.ChunkId = LegacyChunkID;
+            }
+        }
+
+        // Optional: if you ever expose OverrideChunkId in the UI later,
+        // you could force bUseModFolderNameForChunk=false here when it changes.
+    }
+#endif
+}
+
+#endif // WITH_EDITOR
+
+#if WITH_EDITORONLY_DATA
+int32 UPAL_WhiskerwoodModSettings::GetChunkId() const
+{
+    // 1) Explicit override wins when not deriving from folder name
+    if (!bUseModFolderNameForChunk && OverrideChunkId > 0)
+    {
+        return OverrideChunkId;
+    }
+
+    // 2) If this asset has an explicit Rules.ChunkId set, use that
+    if (Rules.ChunkId > 0)
+    {
+        return Rules.ChunkId;
+    }
+
+    // 3) If we still have a LegacyChunkID, prefer that
+    if (LegacyChunkID > 0)
+    {
+        return LegacyChunkID;
+    }
+
+    // 4) Ask the Asset Manager for the *effective* rules, which
+    // merges type-level + per-asset rules (this is where your
+    // WhiskerwoodModSettings ChunkId=20 from INI actually lives).
+    if (UAssetManager* Manager = UAssetManager::GetIfInitialized())
+    {
+        const FPrimaryAssetId Id = GetPrimaryAssetId();
+        if (Id.IsValid())
+        {
+            const FPrimaryAssetRules EffectiveRules = Manager->GetPrimaryAssetRules(Id);
+            if (EffectiveRules.ChunkId > 0)
+            {
+                return EffectiveRules.ChunkId;
+            }
+        }
+    }
+
+
+    // 5) No chunk configured
+    return -1;
+}
+#endif
+// -END MERGED FILE: Private/PAL_WhiskerwoodModSettings.cpp
+
+// -BEGIN MERGED FILE: Private/PDA_WhiskerwoodModSettings.cpp
+#include "PDA_WhiskerwoodModSettings.h"
+
+FPrimaryAssetId UPDA_WhiskerwoodModSettings::GetPrimaryAssetId() const
+{
+	// Give all these assets a type of "WhiskerwoodMod" so they can be grouped in the Primary Asset system if desired.
+	static const FPrimaryAssetType ModType = TEXT("WhiskerwoodMod");
+
+	return FPrimaryAssetId(ModType, GetFName());
+}
+// -END MERGED FILE: Private/PDA_WhiskerwoodModSettings.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodEditorUserSettings.cpp
+// WhiskerwoodEditorUserSettings.cpp
+
+#include "WhiskerwoodEditorUserSettings.h"
+
+#include "Misc/Paths.h"
+#include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformFile.h"
+
+// If you want to use the existing mods dir helper:
+#include "WhiskerwoodFileIOLibrary.h"
+
+UWhiskerwoodEditorUserSettings::UWhiskerwoodEditorUserSettings(const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+{
+	// --------------------------------------------------------------------
+	// Establish sensible defaults for a first-time user.
+	// These are only used when the corresponding config entry is empty.
+	// --------------------------------------------------------------------
+
+	// Project Directory → current project root.
+	if (ProjectDirectory.IsEmpty())
+	{
+		ProjectDirectory = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+		FPaths::NormalizeDirectoryName(ProjectDirectory);
+	}
+
+	// Mods Directory → prefer helper (LOCALAPPDATA/Whiskerwood/Saved/mods)
+	if (ModsDirectory.IsEmpty())
+	{
+		FString AutoModsDir = UWhiskerwoodFileIOLibrary::GetWhiskerwoodModsDirectory();
+		FPaths::NormalizeDirectoryName(AutoModsDir);
+		ModsDirectory = AutoModsDir;
+	}
+
+	// AppData Directory → derive from ModsDirectory:
+	// ModsDirectory = <AppData>/Whiskerwood/Saved/mods
+	// AppDataDirectory = <AppData>/Whiskerwood
+	if (AppDataDirectory.IsEmpty())
+	{
+		FString SavedDir = FPaths::GetPath(ModsDirectory);   // .../Whiskerwood/Saved
+		FString RootDir  = FPaths::GetPath(SavedDir);        // .../Whiskerwood
+		FPaths::NormalizeDirectoryName(RootDir);
+		AppDataDirectory = RootDir;
+	}
+
+	// Base Logs Directory → <AppData>/Whiskerwood/Saved/Logs
+	if (BaseLogsDirectory.IsEmpty())
+	{
+		FString LogsDir = FPaths::Combine(AppDataDirectory, TEXT("Saved"), TEXT("Logs"));
+		FPaths::NormalizeDirectoryName(LogsDir);
+		BaseLogsDirectory = LogsDir;
+	}
+
+	// Temporary Deploy Directory → <AppData>/Whiskerwood/TempWorkshop
+	if (TempDeployDirectory.IsEmpty())
+	{
+		FString TempDir = FPaths::Combine(AppDataDirectory, TEXT("TempWorkshop"));
+		FPaths::NormalizeDirectoryName(TempDir);
+		TempDeployDirectory = TempDir;
+	}
+
+	// Pak Directory → leave empty by default; tools can search from ProjectDirectory.
+	// You can later auto-detect this if you want, e.g. scanning for pakchunk*.pak.
+	if (!PakDirectory.IsEmpty())
+	{
+		FPaths::NormalizeDirectoryName(PakDirectory);
+	}
+
+	// Platform Name → default to "Windows" for now.
+	if (PlatformName.IsEmpty())
+	{
+		PlatformName = TEXT("Windows");
+	}
+
+	// Steam App ID → default to Whiskerwood's ID.
+	if (SteamAppID <= 0)
+	{
+		SteamAppID = 2489330;
+	}
+
+	// Normalise LastCopiedPakPath if present.
+	if (!LastCopiedPakPath.IsEmpty())
+	{
+		FPaths::NormalizeFilename(LastCopiedPakPath);
+	}
+}
+
+void UWhiskerwoodEditorUserSettings::SaveSettings()
+{
+	// This will write to EditorPerProjectUserSettings.ini for this project.
+	SaveConfig();
+}
+
+UWhiskerwoodEditorUserSettings* UWhiskerwoodEditorUserSettings::GetSettings()
+{
+	return GetMutableDefault<UWhiskerwoodEditorUserSettings>();
+}
+// -END MERGED FILE: Private/WhiskerwoodEditorUserSettings.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodFileIOLibrary.cpp
+#include "WhiskerwoodFileIOLibrary.h"
+
+#include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
+#include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformMisc.h"
+
+// ---------------------------------------------------------------------------
+// Internal helpers (compiled for all builds; they themselves are safe)
+// ---------------------------------------------------------------------------
+
+namespace
+{
+    // Normalize path and ensure it contains "Whiskerwood" somewhere (case-insensitive).
+    static bool IsWhiskerwoodSafeDestPath(const FString& InPath, FString& OutNormalizedPath)
+    {
+        OutNormalizedPath = InPath;
+
+        // Normalize slashes and case
+        FPaths::MakeStandardFilename(OutNormalizedPath);
+
+        const FString SafetyToken = TEXT("whiskerwood");
+
+        if (OutNormalizedPath.IsEmpty())
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("WhiskerwoodFileIOLibrary: Refusing to operate on an empty destination path."));
+            return false;
+        }
+
+        if (!OutNormalizedPath.Contains(SafetyToken, ESearchCase::IgnoreCase, ESearchDir::FromStart))
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("WhiskerwoodFileIOLibrary: Refusing to operate on destination path '%s' because it does not contain '%s'."),
+                *OutNormalizedPath,
+                *SafetyToken);
+            return false;
+        }
+
+        return true;
+    }
+
+    static bool IsWhiskerwoodSafeDeletePath(const FString& InPath, FString& OutNormalizedPath)
+    {
+        return IsWhiskerwoodSafeDestPath(InPath, OutNormalizedPath);
+    }
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+FString UWhiskerwoodFileIOLibrary::GetWhiskerwoodModsDirectory()
+{
+
+    // Prefer LOCALAPPDATA to avoid the Documents/OneDrive issue.
+    FString LocalAppData = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
+
+    if (LocalAppData.IsEmpty())
+    {
+        // Fallback: use user settings dir and step up a bit, but this should rarely happen.
+        LocalAppData = FPaths::ConvertRelativePathToFull(FPaths::ProjectSavedDir());
+    }
+
+    FString ModsDir = FPaths::Combine(LocalAppData, TEXT("Whiskerwood"), TEXT("Saved"), TEXT("mods"));
+    FPaths::NormalizeDirectoryName(ModsDir);
+    return ModsDir;
+
+}
+
+bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodFile(const FString& FilePath)
+{
+
+    FString NormalizedPath;
+    if (!IsWhiskerwoodSafeDeletePath(FilePath, NormalizedPath))
+    {
+        return false;
+    }
+
+    IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+    if (!PlatformFile.FileExists(*NormalizedPath))
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("WhiskerwoodFileIOLibrary: File does not exist, cannot delete. Path: '%s'"),
+            *NormalizedPath);
+        return false;
+    }
+
+    const bool bDeleted = PlatformFile.DeleteFile(*NormalizedPath);
+
+    if (!bDeleted)
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("WhiskerwoodFileIOLibrary: Failed to delete file: '%s'"),
+            *NormalizedPath);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log,
+            TEXT("WhiskerwoodFileIOLibrary: Successfully deleted file: '%s'"),
+            *NormalizedPath);
+    }
+
+    return bDeleted;
+
+}
+
+bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodDirectory(const FString& DirectoryPath)
+{
+
+    FString NormalizedPath;
+    if (!IsWhiskerwoodSafeDeletePath(DirectoryPath, NormalizedPath))
+    {
+        return false;
+    }
+
+    IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+    if (!PlatformFile.DirectoryExists(*NormalizedPath))
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("WhiskerwoodFileIOLibrary: Directory does not exist, cannot delete. Path: '%s'"),
+            *NormalizedPath);
+        return false;
+    }
+
+    const bool bDeleted = PlatformFile.DeleteDirectoryRecursively(*NormalizedPath);
+
+    if (!bDeleted)
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("WhiskerwoodFileIOLibrary: Failed to recursively delete directory: '%s'"),
+            *NormalizedPath);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log,
+            TEXT("WhiskerwoodFileIOLibrary: Successfully recursively deleted directory: '%s'"),
+            *NormalizedPath);
+    }
+
+    return bDeleted;
+
+}
+
+bool UWhiskerwoodFileIOLibrary::EnsureWhiskerwoodDirectory(const FString& DirectoryPath)
+{
+
+    FString NormalizedPath;
+    if (!IsWhiskerwoodSafeDestPath(DirectoryPath, NormalizedPath))
+    {
+        return false;
+    }
+
+    IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+    if (PlatformFile.DirectoryExists(*NormalizedPath))
+    {
+        UE_LOG(LogTemp, Verbose,
+            TEXT("WhiskerwoodFileIOLibrary: Directory already exists: '%s'"),
+            *NormalizedPath);
+        return true;
+    }
+
+    const bool bCreated = PlatformFile.CreateDirectoryTree(*NormalizedPath);
+
+    if (!bCreated)
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("WhiskerwoodFileIOLibrary: Failed to create directory tree: '%s'"),
+            *NormalizedPath);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log,
+            TEXT("WhiskerwoodFileIOLibrary: Successfully created directory tree: '%s'"),
+            *NormalizedPath);
+    }
+
+    return bCreated;
+
+}
+
+bool UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(const FString& SourceFilePath, const FString& DestFilePath, bool bOverwriteExisting)
+{
+
+    IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+    FString NormalizedSource = SourceFilePath;
+    FPaths::MakeStandardFilename(NormalizedSource);
+
+    if (NormalizedSource.IsEmpty())
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("WhiskerwoodFileIOLibrary: Source file path is empty, cannot copy."));
+        return false;
+    }
+
+    if (!PlatformFile.FileExists(*NormalizedSource))
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("WhiskerwoodFileIOLibrary: Source file does not exist, cannot copy. Path: '%s'"),
+            *NormalizedSource);
+        return false;
+    }
+
+    FString NormalizedDest;
+    if (!IsWhiskerwoodSafeDestPath(DestFilePath, NormalizedDest))
+    {
+        return false;
+    }
+
+    if (!bOverwriteExisting && PlatformFile.FileExists(*NormalizedDest))
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("WhiskerwoodFileIOLibrary: Destination file already exists and overwrite is disabled. Dest: '%s'"),
+            *NormalizedDest);
+        return false;
+    }
+
+    const FString DestDir = FPaths::GetPath(NormalizedDest);
+    if (!DestDir.IsEmpty())
+    {
+        FString NormalizedDestDir = DestDir;
+        if (!EnsureWhiskerwoodDirectory(NormalizedDestDir))
+        {
+            UE_LOG(LogTemp, Error,
+                TEXT("WhiskerwoodFileIOLibrary: Failed to ensure destination directory for copy. DestDir: '%s'"),
+                *NormalizedDestDir);
+            return false;
+        }
+    }
+
+    const bool bCopied = PlatformFile.CopyFile(*NormalizedDest, *NormalizedSource);
+
+    if (!bCopied)
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("WhiskerwoodFileIOLibrary: Failed to copy file from '%s' to '%s'"),
+            *NormalizedSource,
+            *NormalizedDest);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log,
+            TEXT("WhiskerwoodFileIOLibrary: Successfully copied file from '%s' to '%s'"),
+            *NormalizedSource,
+            *NormalizedDest);
+    }
+
+    return bCopied;
+
+}
+
+bool UWhiskerwoodFileIOLibrary::WriteWhiskerwoodTextFile(const FString& FilePath, const FString& Text, bool bAllowOverwrite)
+{
+
+    FString NormalizedPath;
+    if (!IsWhiskerwoodSafeDestPath(FilePath, NormalizedPath))
+    {
+        return false;
+    }
+
+    IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+    if (!bAllowOverwrite && PlatformFile.FileExists(*NormalizedPath))
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("WhiskerwoodFileIOLibrary: File already exists and overwrite is disabled. Path: '%s'"),
+            *NormalizedPath);
+        return false;
+    }
+
+    const FString Dir = FPaths::GetPath(NormalizedPath);
+    if (!Dir.IsEmpty())
+    {
+        FString NormalizedDir = Dir;
+        if (!EnsureWhiskerwoodDirectory(NormalizedDir))
+        {
+            UE_LOG(LogTemp, Error,
+                TEXT("WhiskerwoodFileIOLibrary: Failed to ensure directory for write. Dir: '%s'"),
+                *NormalizedDir);
+            return false;
+        }
+    }
+
+    const bool bSaved = FFileHelper::SaveStringToFile(
+        Text,
+        *NormalizedPath,
+        FFileHelper::EEncodingOptions::AutoDetect
+    );
+
+    if (!bSaved)
+    {
+        UE_LOG(LogTemp, Error,
+            TEXT("WhiskerwoodFileIOLibrary: Failed to write text file: '%s'"),
+            *NormalizedPath);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Log,
+            TEXT("WhiskerwoodFileIOLibrary: Successfully wrote text file: '%s'"),
+            *NormalizedPath);
+    }
+
+    return bSaved;
+
+}
+// -END MERGED FILE: Private/WhiskerwoodFileIOLibrary.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodLogWatcherSubsystem.cpp
+#include "WhiskerwoodLogWatcherSubsystem.h"
+
+#include "WhiskerwoodEditorUserSettings.h"
+
+#include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
+#include "HAL/FileManager.h"
+#include "Containers/Ticker.h"
+
+
+UWhiskerwoodEditorUserSettings* UWhiskerwoodLogWatcherSubsystem::GetEditorSettings() const
+{
+	return GetMutableDefault<UWhiskerwoodEditorUserSettings>();
+}
+
+void UWhiskerwoodLogWatcherSubsystem::Initialize(FSubsystemCollectionBase& Collection)
+{
+	Super::Initialize(Collection);
+
+	TimeSinceLastScan = 0.0f;
+	ScanIntervalSeconds = 1.0f;
+
+	// Build initial runtime state from settings
+	RefreshFromSettings();
+
+	// Register ticker
+	TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateUObject(this, &UWhiskerwoodLogWatcherSubsystem::HandleTicker),
+		ScanIntervalSeconds
+	);
+}
+
+void UWhiskerwoodLogWatcherSubsystem::Deinitialize()
+{
+	if (TickerHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
+		// No need to manually reset; handle is now invalid after removal.
+	}
+
+	RuntimeStates.Reset();
+
+	Super::Deinitialize();
+}
+
+bool UWhiskerwoodLogWatcherSubsystem::HandleTicker(float DeltaTime)
+{
+	TimeSinceLastScan += DeltaTime;
+
+	if (TimeSinceLastScan >= ScanIntervalSeconds)
+	{
+		TimeSinceLastScan = 0.0f;
+		ScanOnce();
+	}
+
+	// Returning true keeps the ticker active.
+	return true;
+}
+
+void UWhiskerwoodLogWatcherSubsystem::RefreshFromSettings()
+{
+	RuntimeStates.Reset();
+
+	if (UWhiskerwoodEditorUserSettings* Settings = GetEditorSettings())
+	{
+		for (const FWhiskerwoodLogWatchConfig& Config : Settings->LogWatchConfigs)
+		{
+			if (Config.Id.IsNone())
+			{
+				continue;
+			}
+
+			FWhiskerwoodLogRuntimeState& State = RuntimeStates.FindOrAdd(Config.Id);
+			State.LastLineCount = 0;
+			State.bHadFile = false;
+		}
+	}
+}
+
+void UWhiskerwoodLogWatcherSubsystem::SetConfigEnabled(FName ConfigId, bool bEnabled)
+{
+	if (ConfigId.IsNone())
+	{
+		return;
+	}
+
+	if (UWhiskerwoodEditorUserSettings* Settings = GetEditorSettings())
+	{
+		bool bChanged = false;
+
+		for (FWhiskerwoodLogWatchConfig& Config : Settings->LogWatchConfigs)
+		{
+			if (Config.Id == ConfigId)
+			{
+				if (Config.bEnabled != bEnabled)
+				{
+					Config.bEnabled = bEnabled;
+					bChanged = true;
+				}
+				break;
+			}
+		}
+
+		if (bChanged)
+		{
+			Settings->SaveSettings();
+			RefreshFromSettings();
+		}
+	}
+}
+
+void UWhiskerwoodLogWatcherSubsystem::ScanOnce()
+{
+	UWhiskerwoodEditorUserSettings* Settings = GetEditorSettings();
+	if (!Settings)
+	{
+		return;
+	}
+
+	IFileManager& FileManager = IFileManager::Get();
+
+	for (const FWhiskerwoodLogWatchConfig& Config : Settings->LogWatchConfigs)
+	{
+		if (!Config.bEnabled || Config.Id.IsNone())
+		{
+			continue;
+		}
+
+		const FString& FilePath = Config.LogFilePath;
+		if (FilePath.IsEmpty())
+		{
+			continue;
+		}
+
+		FWhiskerwoodLogRuntimeState* StatePtr = RuntimeStates.Find(Config.Id);
+		if (!StatePtr)
+		{
+			// Should have been created in RefreshFromSettings, but guard anyway.
+			StatePtr = &RuntimeStates.Add(Config.Id);
+			StatePtr->LastLineCount = 0;
+			StatePtr->bHadFile = false;
+		}
+
+		FWhiskerwoodLogRuntimeState& State = *StatePtr;
+
+		// Check if file exists
+		if (!FileManager.FileExists(*FilePath))
+		{
+			// Reset state if the file disappeared
+			State.LastLineCount = 0;
+			State.bHadFile = false;
+			continue;
+		}
+
+		// Load whole file as text (simple, not the most efficient, but fine for modest logs)
+		FString FileContents;
+		if (!FFileHelper::LoadFileToString(FileContents, *FilePath))
+		{
+			continue;
+		}
+
+		TArray<FString> Lines;
+		FileContents.ParseIntoArrayLines(Lines);
+
+		const int32 NewLineCount = Lines.Num();
+
+		// First time we see this file, just set baseline line count and do not emit
+		if (!State.bHadFile)
+		{
+			State.bHadFile = true;
+			State.LastLineCount = NewLineCount;
+			continue;
+		}
+
+		if (NewLineCount <= State.LastLineCount)
+		{
+			// No new lines (or file shrunk/rotated; in that case, reset)
+			if (NewLineCount < State.LastLineCount)
+			{
+				State.LastLineCount = NewLineCount;
+			}
+			continue;
+		}
+
+		// Gather only the new lines since last time
+		TArray<FString> NewLines;
+		for (int32 Index = State.LastLineCount; Index < NewLineCount; ++Index)
+		{
+			NewLines.Add(Lines[Index]);
+		}
+
+		State.LastLineCount = NewLineCount;
+
+		if (NewLines.Num() > 0)
+		{
+			OnLogLines.Broadcast(
+				Config.Id,
+				Config.DisplayName,
+				FilePath,
+				NewLines
+			);
+		}
+	}
+}
+// -END MERGED FILE: Private/WhiskerwoodLogWatcherSubsystem.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodModListItem.cpp
+#include "WhiskerwoodModListItem.h"
+
+// -END MERGED FILE: Private/WhiskerwoodModListItem.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodModListRowWidget.cpp
+#include "WhiskerwoodModListRowWidget.h"
+
+#include "WhiskerwoodModListItem.h"
+#include "PAL_WhiskerwoodModSettings.h"
+#include "WhiskerwoodModToolsLibrary.h"
+#include "WhiskerwoodModToolsUILibrary.h"
+
+#include "Components/TextBlock.h"
+#include "Components/Button.h"
+
+void UWhiskerwoodModListRowWidget::BindButtonsIfNeeded()
+{
+	if (bButtonsBound)
+	{
+		return;
+	}
+
+	UE_LOG(LogTemp, Log, TEXT("[%s] BindButtonsIfNeeded called."), *GetName());
+
+	if (MoveButton)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[%s] MoveButton is valid, binding click."), *GetName());
+		MoveButton->OnClicked.AddDynamic(this, &UWhiskerwoodModListRowWidget::HandleMoveClicked);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[%s] MoveButton is NULL in BindButtonsIfNeeded."), *GetName());
+	}
+
+	if (RemoveButton)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[%s] RemoveButton is valid, binding click."), *GetName());
+		RemoveButton->OnClicked.AddDynamic(this, &UWhiskerwoodModListRowWidget::HandleRemoveClicked);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[%s] RemoveButton is NULL in BindButtonsIfNeeded."), *GetName());
+	}
+
+	if (DeployButton)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[%s] DeployButton is valid, binding click."), *GetName());
+		DeployButton->OnClicked.AddDynamic(this, &UWhiskerwoodModListRowWidget::HandleDeployClicked);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[%s] DeployButton is NULL in BindButtonsIfNeeded."), *GetName());
+	}
+
+	if (OpenFolderButton)
+	{
+		UE_LOG(LogTemp, Log, TEXT("[%s] OpenFolderButton is valid, binding click."), *GetName());
+		OpenFolderButton->OnClicked.AddDynamic(this, &UWhiskerwoodModListRowWidget::HandleOpenFolderClicked);
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[%s] OpenFolderButton is NULL in BindButtonsIfNeeded."), *GetName());
+	}
+
+	bButtonsBound = true;
+}
+
+void UWhiskerwoodModListRowWidget::NativeOnListItemObjectSet(UObject* ListItemObject)
+{
+	// If you want to be extra-safe, you can call Super here:
+	// Super::NativeOnListItemObjectSet(ListItemObject);
+
+	UE_LOG(LogTemp, Log, TEXT("[%s] NativeOnListItemObjectSet: %s"),
+		*GetName(),
+		*GetNameSafe(ListItemObject));
+
+	ModItem = Cast<UWhiskerwoodModListItem>(ListItemObject);
+
+	// Make sure the buttons are wired *now* that we have a ModItem
+	BindButtonsIfNeeded();
+
+	RefreshRow();
+}
+
+void UWhiskerwoodModListRowWidget::RefreshRow()
+{
+	UWhiskerwoodModToolsUILibrary::RefreshModListRowUI(
+		ModItem,
+		NameText,
+		ChunkIdText,
+		StatusText,
+		MoveButton,
+		RemoveButton,
+		DeployButton
+	);
+}
+
+void UWhiskerwoodModListRowWidget::HandleMoveClicked()
+{
+	UE_LOG(LogTemp, Log, TEXT("[%s] HandleMoveClicked fired."), *GetName());
+
+	if (!ModItem || !ModItem->ModSettings)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[%s] HandleMoveClicked: ModItem or ModSettings is null."), *GetName());
+		return;
+	}
+
+	UWhiskerwoodModToolsLibrary::MovePakMod(ModItem->ModSettings);
+	RefreshRow();
+}
+
+void UWhiskerwoodModListRowWidget::HandleRemoveClicked()
+{
+	UE_LOG(LogTemp, Log, TEXT("[%s] HandleRemoveClicked fired."), *GetName());
+
+	if (!ModItem || !ModItem->ModSettings)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[%s] HandleRemoveClicked: ModItem or ModSettings is null."), *GetName());
+		return;
+	}
+
+	UWhiskerwoodModToolsLibrary::RemoveMovedMod(ModItem->ModSettings);
+	RefreshRow();
+}
+
+void UWhiskerwoodModListRowWidget::HandleDeployClicked()
+{
+	UE_LOG(LogTemp, Log, TEXT("[%s] HandleDeployClicked fired."), *GetName());
+
+	if (!ModItem || !ModItem->ModSettings)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[%s] HandleDeployClicked: ModItem or ModSettings is null."), *GetName());
+		return;
+	}
+
+	FString StagingDir;
+	UWhiskerwoodModToolsLibrary::DeployModToWorkshopStaging(
+		ModItem->ModSettings,
+		/*OutStagingDir*/ StagingDir
+	);
+
+	RefreshRow();
+}
+
+void UWhiskerwoodModListRowWidget::HandleOpenFolderClicked()
+{
+	UE_LOG(LogTemp, Log, TEXT("[%s] HandleOpenFolderClicked fired."), *GetName());
+
+	if (!ModItem)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[%s] HandleOpenFolderClicked: ModItem is null."), *GetName());
+		return;
+	}
+
+	UWhiskerwoodModToolsUILibrary::OpenModDirectoryForListItem(
+		ModItem,
+		/*bCreateIfMissing*/ true
+	);
+}
+// -END MERGED FILE: Private/WhiskerwoodModListRowWidget.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodModTools.cpp
+// Private/WhiskerwoodModTools.cpp
+// Whiskerwood Mod Tools - main editor module
+
+#include "WhiskerwoodModTools.h"
+
+#include "ToolMenus.h"
+#include "WhiskerwoodModToolsStyle.h"
+
+#if WITH_EDITOR
+#include "Editor.h"
+#include "LevelEditor.h"
+#include "EditorUtilitySubsystem.h"
+#include "EditorUtilityWidgetBlueprint.h"
+#endif
+
+#define LOCTEXT_NAMESPACE "FWhiskerwoodModToolsModule"
+
+void FWhiskerwoodModToolsModule::StartupModule()
+{
+#if WITH_EDITOR
+	UE_LOG(LogTemp, Log, TEXT("[WhiskerwoodModTools] StartupModule"));
+
+	// Initialize our icon style (loads Icon_WWModTools_40, etc.)
+	FWhiskerwoodModToolsStyle::Initialize();
+
+	// Ask ToolMenus to call us when it is ready so we can register our toolbar button.
+	ToolMenusStartupHandle = UToolMenus::RegisterStartupCallback(
+		FSimpleDelegate::CreateRaw(
+			this,
+			&FWhiskerwoodModToolsModule::RegisterMenus
+		)
+	);
+#endif
+}
+
+void FWhiskerwoodModToolsModule::ShutdownModule()
+{
+#if WITH_EDITOR
+	UE_LOG(LogTemp, Log, TEXT("[WhiskerwoodModTools] ShutdownModule"));
+
+	if (UToolMenus::IsToolMenuUIEnabled())
+	{
+		UToolMenus::UnRegisterStartupCallback(ToolMenusStartupHandle);
+	}
+
+	FWhiskerwoodModToolsStyle::Shutdown();
+#endif
+}
+
+void FWhiskerwoodModToolsModule::RegisterMenus()
+{
+#if WITH_EDITOR
+	UE_LOG(LogTemp, Log, TEXT("[WhiskerwoodModTools] RegisterMenus called."));
+
+	UToolMenus* ToolMenus = UToolMenus::Get();
+	if (!ToolMenus)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[WhiskerwoodModTools] UToolMenus::Get() returned nullptr."));
+		return;
+	}
+
+	// Extend the Play toolbar so the button appears near the Play controls.
+	UToolMenu* PlayToolbarMenu =
+		ToolMenus->ExtendMenu("LevelEditor.LevelEditorToolBar.PlayToolBar");
+
+	if (!PlayToolbarMenu)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("[WhiskerwoodModTools] Failed to extend 'LevelEditor.LevelEditorToolBar.PlayToolBar'.")
+		);
+		return;
+	}
+
+	// Add our own section on that toolbar.
+	FToolMenuSection& Section = PlayToolbarMenu->FindOrAddSection("WhiskerwoodModToolsSection");
+
+	UE_LOG(LogTemp, Log, TEXT("[WhiskerwoodModTools] Adding toolbar button to Play toolbar."));
+
+	FToolMenuEntry Entry = FToolMenuEntry::InitToolBarButton(
+		FName("WhiskerwoodModTools_OpenDashboard"),
+		FToolUIActionChoice(
+			FUIAction(
+				FExecuteAction::CreateRaw(
+					this,
+					&FWhiskerwoodModToolsModule::OnOpenModToolsDashboardClicked
+				)
+			)
+		),
+		LOCTEXT("WWModTools_ButtonLabel", "WW Mod Tools"),
+		LOCTEXT("WWModTools_ButtonTooltip", "Open the Whiskerwood Mod Tools dashboard."),
+		FSlateIcon(
+			FWhiskerwoodModToolsStyle::GetStyleSetName(),
+			TEXT("WhiskerwoodModTools.ToolbarIcon")
+		),
+		EUserInterfaceActionType::Button,
+		NAME_None
+	);
+
+	Section.AddEntry(Entry);
+
+	UE_LOG(LogTemp, Log, TEXT("[WhiskerwoodModTools] Toolbar button added to Play toolbar."));
+#endif
+}
+
+void FWhiskerwoodModToolsModule::OnOpenModToolsDashboardClicked()
+{
+#if WITH_EDITOR
+	UE_LOG(LogTemp, Log, TEXT("[WhiskerwoodModTools] Toolbar button clicked — opening EUW."));
+
+	if (!GEditor)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("[WhiskerwoodModTools] GEditor is null; cannot open EUW."));
+		return;
+	}
+
+	// Load the EUW asset
+	UEditorUtilityWidgetBlueprint* WidgetBP = LoadModToolsEditorWidget();
+	if (!WidgetBP)
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[WhiskerwoodModTools] Failed to load EUW_WWModToolsEditorWidget. Check asset path.")
+		);
+		return;
+	}
+
+	// Use the EditorUtilitySubsystem to spawn the tab
+	if (UEditorUtilitySubsystem* EditorUtilitySubsystem =
+		    GEditor->GetEditorSubsystem<UEditorUtilitySubsystem>())
+	{
+		EditorUtilitySubsystem->SpawnAndRegisterTab(WidgetBP);
+	}
+	else
+	{
+		UE_LOG(
+			LogTemp,
+			Error,
+			TEXT("[WhiskerwoodModTools] Could not get EditorUtilitySubsystem; cannot spawn tab.")
+		);
+	}
+#endif
+}
+
+UEditorUtilityWidgetBlueprint* FWhiskerwoodModToolsModule::LoadModToolsEditorWidget() const
+{
+#if WITH_EDITOR
+	// C++ only needs the object path, not the /Script prefix:
+	// /Script/Blutility.EditorUtilityWidgetBlueprint'/WhiskerwoodModTools/EUW_WWModToolsEditorWidget.EUW_WWModToolsEditorWidget'
+	// =>
+	// /WhiskerwoodModTools/EUW_WWModToolsEditorWidget.EUW_WWModToolsEditorWidget
+
+	const FString AssetPath =
+		TEXT("/WhiskerwoodModTools/EUW_WWModToolsEditorWidget.EUW_WWModToolsEditorWidget");
+
+	UObject* LoadedObj = StaticLoadObject(
+		UEditorUtilityWidgetBlueprint::StaticClass(),
+		/*Outer=*/nullptr,
+		*AssetPath
+	);
+
+	return Cast<UEditorUtilityWidgetBlueprint>(LoadedObj);
+#else
+	return nullptr;
+#endif
+}
+
+#undef LOCTEXT_NAMESPACE
+
+IMPLEMENT_MODULE(FWhiskerwoodModToolsModule, WhiskerwoodModTools)
+// -END MERGED FILE: Private/WhiskerwoodModTools.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodModToolsLibrary.cpp
+#include "WhiskerwoodModToolsLibrary.h"
+
+#include "WhiskerwoodModListItem.h"
+#include "PAL_WhiskerwoodModSettings.h"
+#include "WhiskerwoodFileIOLibrary.h"
+#include "WhiskerwoodEditorUserSettings.h"
+
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "Modules/ModuleManager.h"
+#include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
+#include "Serialization/JsonWriter.h"
+#include "Serialization/JsonSerializer.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformProcess.h"
+
+// ============================================================================
+// GetAllWhiskerwoodModSettings
+// ============================================================================
+
+void UWhiskerwoodModToolsLibrary::GetAllWhiskerwoodModSettings(
+	TArray<UPAL_WhiskerwoodModSettings*>& OutModSettings)
+{
+	OutModSettings.Reset();
+
+
+	FAssetRegistryModule& AssetRegistryModule =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	FARFilter Filter;
+	Filter.bRecursiveClasses = true;
+	Filter.bIncludeOnlyOnDiskAssets = false;
+
+	// UE5.6+: use ClassPaths instead of ClassNames
+	Filter.ClassPaths.Add(UPAL_WhiskerwoodModSettings::StaticClass()->GetClassPathName());
+
+	TArray<FAssetData> AssetDataList;
+	AssetRegistry.GetAssets(Filter, AssetDataList);
+
+	for (const FAssetData& AssetData : AssetDataList)
+	{
+		if (UObject* LoadedObj = AssetData.GetAsset())
+		{
+			if (UPAL_WhiskerwoodModSettings* ModSettings =
+				    Cast<UPAL_WhiskerwoodModSettings>(LoadedObj))
+			{
+				OutModSettings.Add(ModSettings);
+			}
+		}
+	}
+
+}
+
+FString UWhiskerwoodModToolsLibrary::ResolveProjectDirectory()
+{
+	const UWhiskerwoodEditorUserSettings* Settings =
+		GetDefault<UWhiskerwoodEditorUserSettings>();
+
+	if (Settings && !Settings->ProjectDirectory.IsEmpty())
+	{
+		FString Candidate = FPaths::ConvertRelativePathToFull(Settings->ProjectDirectory);
+		FPaths::NormalizeDirectoryName(Candidate);
+		return Candidate;
+	}
+
+	FString ProjectDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir());
+	FPaths::NormalizeDirectoryName(ProjectDir);
+	return ProjectDir;
+}
+
+FString UWhiskerwoodModToolsLibrary::ResolveModsDirectory()
+{
+	const UWhiskerwoodEditorUserSettings* Settings =
+		GetDefault<UWhiskerwoodEditorUserSettings>();
+
+	// 1) User override
+	if (Settings && !Settings->ModsDirectory.IsEmpty())
+	{
+		FString Dir = Settings->ModsDirectory;
+		FPaths::NormalizeDirectoryName(Dir);
+		return Dir;
+	}
+
+	// 2) Auto from helper (LOCALAPPDATA/Whiskerwood/Saved/mods)
+	FString AutoModsDir = UWhiskerwoodFileIOLibrary::GetWhiskerwoodModsDirectory();
+	FPaths::NormalizeDirectoryName(AutoModsDir);
+	return AutoModsDir;
+}
+
+
+FString UWhiskerwoodModToolsLibrary::ResolveAppDataDirectory()
+{
+	const UWhiskerwoodEditorUserSettings* Settings =
+		GetDefault<UWhiskerwoodEditorUserSettings>();
+
+	// 1) Explicit override
+	if (Settings && !Settings->AppDataDirectory.IsEmpty())
+	{
+		FString Dir = Settings->AppDataDirectory;
+		FPaths::NormalizeDirectoryName(Dir);
+		return Dir;
+	}
+
+	// 2) Derive from ModsDirectory
+	const FString ModsDir = ResolveModsDirectory();
+
+	// ModsDir = <AppData>/Whiskerwood/Saved/mods
+	FString SavedDir = FPaths::GetPath(ModsDir);   // .../Whiskerwood/Saved
+	FString RootDir  = FPaths::GetPath(SavedDir);  // .../Whiskerwood
+
+	FPaths::NormalizeDirectoryName(RootDir);
+	return RootDir;
+}
+
+
+FString UWhiskerwoodModToolsLibrary::ResolveBaseLogsDirectory()
+{
+	const UWhiskerwoodEditorUserSettings* Settings =
+		GetDefault<UWhiskerwoodEditorUserSettings>();
+
+	// 1) User override
+	if (Settings && !Settings->BaseLogsDirectory.IsEmpty())
+	{
+		FString Dir = Settings->BaseLogsDirectory;
+		FPaths::NormalizeDirectoryName(Dir);
+		return Dir;
+	}
+
+	// 2) AppData/Saved/Logs
+	const FString AppData = ResolveAppDataDirectory();
+	FString LogsDir = FPaths::Combine(AppData, TEXT("Saved"), TEXT("Logs"));
+	FPaths::NormalizeDirectoryName(LogsDir);
+	return LogsDir;
+}
+
+
+FString UWhiskerwoodModToolsLibrary::ResolveTempDeployDirectory()
+{
+	const UWhiskerwoodEditorUserSettings* Settings =
+		GetDefault<UWhiskerwoodEditorUserSettings>();
+
+	// 1) User override
+	if (Settings && !Settings->TempDeployDirectory.IsEmpty())
+	{
+		FString Dir = Settings->TempDeployDirectory;
+		FPaths::NormalizeDirectoryName(Dir);
+		return Dir;
+	}
+
+	// 2) AppData/TempWorkshop
+	const FString AppData = ResolveAppDataDirectory();
+	FString TempDir = FPaths::Combine(AppData, TEXT("TempWorkshop"));
+	FPaths::NormalizeDirectoryName(TempDir);
+	return TempDir;
+}
+
+
+FString UWhiskerwoodModToolsLibrary::ResolvePakDirectory()
+{
+	const UWhiskerwoodEditorUserSettings* Settings =
+		GetDefault<UWhiskerwoodEditorUserSettings>();
+
+	// 1) User override
+	if (Settings && !Settings->PakDirectory.IsEmpty())
+	{
+		FString Dir = Settings->PakDirectory;
+		FPaths::NormalizeDirectoryName(Dir);
+		return Dir;
+	}
+
+	// 2) Try to auto-detect by scanning for any pakchunk*.pak
+	const FString ProjectDir = ResolveProjectDirectory();
+
+	TArray<FString> FoundPaks;
+	IFileManager::Get().FindFilesRecursive(
+		FoundPaks,
+		*ProjectDir,
+		TEXT("pakchunk*-*.pak"),
+		true,   // files
+		false   // directories
+	);
+
+	if (FoundPaks.Num() > 0)
+	{
+		// Take the directory of the first result as heuristic
+		const FString FirstPakPath = FoundPaks[0];
+		FString PakDir = FPaths::GetPath(FirstPakPath);
+		FPaths::NormalizeDirectoryName(PakDir);
+		return PakDir;
+	}
+
+	// 3) Give up: no pak dir known yet
+	return FString();
+}
+
+
+FString UWhiskerwoodModToolsLibrary::ResolveUATPlatformName()
+{
+	const UWhiskerwoodEditorUserSettings* Settings =
+		GetDefault<UWhiskerwoodEditorUserSettings>();
+
+	FString HumanPlatform = TEXT("Windows");
+	if (Settings && !Settings->PlatformName.IsEmpty())
+	{
+		HumanPlatform = Settings->PlatformName;
+	}
+
+	// Normalize to lower for comparison
+	const FString Lower = HumanPlatform.ToLower();
+
+	if (Lower.Contains(TEXT("win")))
+	{
+		return TEXT("Win64");
+	}
+	else if (Lower.Contains(TEXT("linux")))
+	{
+		return TEXT("Linux");
+	}
+	else if (Lower.Contains(TEXT("mac")))
+	{
+		// You can tweak this if you ever target Mac
+		return TEXT("Mac");
+	}
+
+	// Fallback: assume Windows
+	return TEXT("Win64");
+}
+
+
+bool UWhiskerwoodModToolsLibrary::IsNonEmptyPath(const FString& Path)
+{
+	return !Path.IsEmpty() && Path.Len() > 2;
+}
+
+bool UWhiskerwoodModToolsLibrary::DoesDirectoryExist(const FString& DirPath)
+{
+	if (DirPath.IsEmpty())
+	{
+		return false;
+	}
+
+	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
+	return PF.DirectoryExists(*DirPath);
+}
+
+bool UWhiskerwoodModToolsLibrary::DoesFileExist(const FString& FilePath)
+{
+	if (FilePath.IsEmpty())
+	{
+		return false;
+	}
+
+	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
+	return PF.FileExists(*FilePath);
+}
+
+
+
+
+
+
+
+// ============================================================================
+// GetAllModListItems
+// ============================================================================
+
+void UWhiskerwoodModToolsLibrary::GetAllModListItems(
+	TArray<UWhiskerwoodModListItem*>& OutItems)
+{
+	OutItems.Reset();
+
+
+	FAssetRegistryModule& AssetRegistryModule =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	FARFilter Filter;
+	Filter.bRecursiveClasses = true;
+	Filter.bIncludeOnlyOnDiskAssets = false;
+	Filter.ClassPaths.Add(UPAL_WhiskerwoodModSettings::StaticClass()->GetClassPathName());
+
+	TArray<FAssetData> AssetDataList;
+	AssetRegistry.GetAssets(Filter, AssetDataList);
+
+	for (const FAssetData& AssetData : AssetDataList)
+	{
+		UObject* LoadedObj = AssetData.GetAsset();
+		if (!LoadedObj)
+		{
+			continue;
+		}
+
+		UPAL_WhiskerwoodModSettings* ModSettings =
+			Cast<UPAL_WhiskerwoodModSettings>(LoadedObj);
+
+		if (!ModSettings)
+		{
+			continue;
+		}
+
+		UWhiskerwoodModListItem* Item = NewObject<UWhiskerwoodModListItem>();
+		Item->ModSettings = ModSettings;
+
+
+		Item->ModName = ModSettings->ModName.IsEmpty()
+			? ModSettings->GetName()
+			: ModSettings->ModName;
+		Item->ChunkId = ModSettings->GetChunkId();
+
+
+		Item->ModDirectoryPath = GetModDirectoryPath(ModSettings);
+
+		OutItems.Add(Item);
+	}
+
+}
+
+// ============================================================================
+// GetModDirectoryPath
+// ============================================================================
+
+FString UWhiskerwoodModToolsLibrary::GetModDirectoryPath(
+	const UPAL_WhiskerwoodModSettings* ModSettings)
+{
+	if (!ModSettings)
+	{
+		return TEXT("");
+	}
+
+	const FString BaseModsDir = ResolveModsDirectory();
+
+	FString DirName;
+
+	DirName = ModSettings->ModDirName;
+
+
+	if (DirName.IsEmpty())
+	{
+		// Fallback: use asset name
+		DirName = ModSettings->GetName();
+	}
+
+	FString FullPath = FPaths::Combine(BaseModsDir, DirName);
+	FPaths::NormalizeDirectoryName(FullPath);
+
+	return FullPath;
+}
+
+// ============================================================================
+// WriteModDescriptorJson
+// ============================================================================
+
+bool UWhiskerwoodModToolsLibrary::WriteModDescriptorJson(
+	const UPAL_WhiskerwoodModSettings* ModSettings,
+	const FString& TargetFilePath)
+{
+	if (!ModSettings)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("WriteModDescriptorJson: ModSettings is null."));
+		return false;
+	}
+
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+
+	FString Name = ModSettings->GetName();
+
+	Name = ModSettings->ModName.IsEmpty()
+		? ModSettings->GetName()
+		: ModSettings->ModName;
+
+
+	Root->SetStringField(TEXT("Name"), Name);
+
+
+	Root->SetStringField(TEXT("Description"), ModSettings->Description);
+	Root->SetStringField(TEXT("Version"), ModSettings->Version);
+	Root->SetStringField(TEXT("CreatedBy"), ModSettings->CreatedBy);
+
+
+
+	// Optional: include Steam App ID (global) and Workshop Id (per-mod)
+	if (UWhiskerwoodEditorUserSettings* Settings = GetMutableDefault<UWhiskerwoodEditorUserSettings>())
+	{
+		if (Settings->SteamAppID > 0)
+		{
+			Root->SetNumberField(TEXT("SteamAppID"), Settings->SteamAppID);
+		}
+	}
+
+
+	if (!ModSettings->SteamWorkshopId.IsEmpty())
+	{
+		Root->SetStringField(TEXT("SteamWorkshopId"), ModSettings->SteamWorkshopId);
+	}
+
+
+	FString Output;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Output);
+
+	if (!FJsonSerializer::Serialize(Root, Writer))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("WriteModDescriptorJson: Failed to serialize JSON for mod '%s'."), *Name);
+		return false;
+	}
+
+	if (!FFileHelper::SaveStringToFile(Output, *TargetFilePath))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("WriteModDescriptorJson: Failed to save JSON to '%s'."), *TargetFilePath);
+		return false;
+	}
+
+	UE_LOG(LogTemp, Log,
+		TEXT("WriteModDescriptorJson: Wrote descriptor for mod '%s' to '%s'."), *Name, *TargetFilePath);
+
+	return true;
+}
+
+// ============================================================================
+// MovePakMod
+// ============================================================================
+
+bool UWhiskerwoodModToolsLibrary::MovePakMod(UPAL_WhiskerwoodModSettings* ModSettings)
+{
+	if (!ModSettings)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("MovePakMod: ModSettings is null."));
+		return false;
+	}
+
+
+	// 1) Validate Editor User Settings
+	UWhiskerwoodEditorUserSettings* Settings =
+		GetMutableDefault<UWhiskerwoodEditorUserSettings>();
+
+	if (!Settings)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("MovePakMod: Cannot access WhiskerwoodEditorUserSettings."));
+		return false;
+	}
+
+	if (Settings->ProjectDirectory.IsEmpty())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("MovePakMod: ProjectDir is empty. Set this to the directory containing the .uproject."));
+		return false;
+	}
+
+	if (Settings->PlatformName.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("MovePakMod: PlatformName is empty. Will not prefer any specific platform name in pak search."));
+	}
+
+	// 2) Validate ChunkId
+	int32 ChunkId = -1;
+#if WITH_EDITORONLY_DATA
+	ChunkId = ModSettings->GetChunkId();
+#endif
+
+	if (ChunkId <= 0)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("MovePakMod: ChunkId is not set (<= 0) for mod '%s'."), *ModSettings->GetName());
+		return false;
+	}
+
+	const FString ProjectDir   = Settings->ProjectDirectory;
+	const FString PlatformName = Settings->PlatformName; // e.g. "Windows"
+
+	// 3) Search for the pakchunk file anywhere under ProjectDir
+	const FString PakPattern = FString::Printf(
+		TEXT("pakchunk%d-*.pak"),
+		ChunkId
+	);
+
+	UE_LOG(LogTemp, Log,
+		TEXT("MovePakMod: Searching recursively under '%s' for '%s'"),
+		*ProjectDir,
+		*PakPattern);
+
+	TArray<FString> FoundPaks;
+	IFileManager& FileManager = IFileManager::Get();
+
+	FileManager.FindFilesRecursive(
+		FoundPaks,
+		*ProjectDir,
+		*PakPattern,
+		/*Files*/ true,
+		/*Directories*/ false
+	);
+
+	if (FoundPaks.Num() == 0)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("MovePakMod: Could not find any pak matching '%s' under '%s'."),
+			*PakPattern,
+			*ProjectDir);
+		return false;
+	}
+
+	// Prefer a pak whose path contains the PlatformName (e.g., "Windows")
+	FString SourcePakPath = FoundPaks[0];
+
+	if (!PlatformName.IsEmpty())
+	{
+		for (const FString& Candidate : FoundPaks)
+		{
+			if (Candidate.Contains(PlatformName))
+			{
+				SourcePakPath = Candidate;
+				break;
+			}
+		}
+	}
+
+	UE_LOG(LogTemp, Log,
+		TEXT("MovePakMod: Using source pak: '%s'"), *SourcePakPath);
+
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+
+	if (!PlatformFile.FileExists(*SourcePakPath))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("MovePakMod: Selected source pak does not exist: '%s'"), *SourcePakPath);
+		return false;
+	}
+
+	// 4) Compute target mod directory under AppData/Local/Whiskerwood/Saved/mods
+	FString ModDir = GetModDirectoryPath(ModSettings);
+
+	if (!UWhiskerwoodFileIOLibrary::EnsureWhiskerwoodDirectory(ModDir))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("MovePakMod: Failed to ensure mod directory '%s'."), *ModDir);
+		return false;
+	}
+
+	// 5) Target .pak name inside mod dir: <ModDirName>.pak
+	FString ModDirName;
+#if WITH_EDITORONLY_DATA
+	ModDirName = ModSettings->ModDirName;
+#endif
+	if (ModDirName.IsEmpty())
+	{
+		ModDirName = ModSettings->GetName();
+	}
+
+	const FString TargetPakPath = FPaths::Combine(ModDir, ModDirName + TEXT(".pak"));
+
+	UE_LOG(LogTemp, Log,
+		TEXT("MovePakMod: Copying pak from '%s' to '%s'"),
+		*SourcePakPath,
+		*TargetPakPath);
+
+	// 6) Copy / overwrite .pak into mod directory
+	const bool bCopied = UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(
+		SourcePakPath,
+		TargetPakPath,
+		/*bOverwriteExisting*/ true);
+
+	if (!bCopied)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("MovePakMod: Failed to copy pak for mod '%s'."), *ModDirName);
+		return false;
+	}
+
+	// 7) Write .uplugin-style JSON descriptor into same directory
+	const FString DescriptorPath = FPaths::Combine(ModDir, ModDirName + TEXT(".uplugin"));
+	if (!WriteModDescriptorJson(ModSettings, DescriptorPath))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("MovePakMod: Failed to write descriptor for mod '%s'."), *ModDirName);
+		return false;
+	}
+
+	UE_LOG(LogTemp, Log,
+		TEXT("MovePakMod: Successfully deployed mod '%s' to '%s'."),
+		*ModDirName, *ModDir);
+
+	return true;
+
+}
+
+// ============================================================================
+// RunPackagingForMod
+// ============================================================================
+
+bool UWhiskerwoodModToolsLibrary::RunPackagingForMod()
+{
+
+	// This runs Unreal Automation Tool (UAT) as an external process:
+	// RunUAT.bat BuildCookRun -project="..." -pak -package -platform=Win64 -cook ...
+	// Returns true ONLY if UAT exits with code 0.
+
+	// 1) Find RunUAT.bat
+	const FString EngineDir = FPaths::ConvertRelativePathToFull(FPaths::EngineDir());
+	const FString UATPath   = FPaths::Combine(EngineDir, TEXT("Build"), TEXT("BatchFiles"), TEXT("RunUAT.bat"));
+
+	if (!FPaths::FileExists(UATPath))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("RunPackagingForMod: RunUAT.bat not found at '%s'"), *UATPath);
+		return false;
+	}
+
+	// 2) Get the .uproject path
+	const FString ProjectFile = FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath());
+	if (ProjectFile.IsEmpty())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("RunPackagingForMod: Project file path is empty."));
+		return false;
+	}
+
+	// 3) Pull platform info from settings
+	UWhiskerwoodEditorUserSettings* Settings =
+		GetMutableDefault<UWhiskerwoodEditorUserSettings>();
+
+	FString UserPlatformName = TEXT("Windows");
+	if (Settings && !Settings->PlatformName.IsEmpty())
+	{
+		UserPlatformName = Settings->PlatformName;
+	}
+
+	// What UAT actually wants
+	FString UATPlatformName = TEXT("Win64");
+
+	if (UserPlatformName.Equals(TEXT("Win64"), ESearchCase::IgnoreCase))
+	{
+		UATPlatformName = TEXT("Win64");
+	}
+	else if (UserPlatformName.Equals(TEXT("Windows"), ESearchCase::IgnoreCase) ||
+	         UserPlatformName.Equals(TEXT("WindowsNoEditor"), ESearchCase::IgnoreCase))
+	{
+		UATPlatformName = TEXT("Win64");
+	}
+
+	// 4) Build UAT command line
+	const FString CommandLine = FString::Printf(
+		TEXT("BuildCookRun -project=\"%s\" -noP4 -clientconfig=Development -serverconfig=Development ")
+		TEXT("-nocompile -stage -pak -package -platform=%s -cook -skipeditorcontent"),
+		*ProjectFile,
+		*UATPlatformName
+	);
+
+	UE_LOG(LogTemp, Log,
+		TEXT("RunPackagingForMod: Starting UAT:\n  \"%s\" %s"),
+		*UATPath,
+		*CommandLine);
+
+	uint32 ProcID = 0;
+
+	FProcHandle ProcHandle = FPlatformProcess::CreateProc(
+		*UATPath,
+		*CommandLine,
+		/*bLaunchDetached*/ false,
+		/*bLaunchHidden*/  false,
+		/*bLaunchReallyHidden*/ false,
+		&ProcID,
+		0,
+		nullptr,
+		nullptr
+	);
+
+	if (!ProcHandle.IsValid())
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("RunPackagingForMod: Failed to start UAT process."));
+		return false;
+	}
+
+	// Block until UAT finishes
+	while (FPlatformProcess::IsProcRunning(ProcHandle))
+	{
+		FPlatformProcess::Sleep(1.0f);
+	}
+
+	int32 ReturnCode = -1;
+	FPlatformProcess::GetProcReturnCode(ProcHandle, &ReturnCode);
+
+	const bool bSuccess = (ReturnCode == 0);
+
+	UE_LOG(LogTemp, Log,
+		TEXT("RunPackagingForMod: UAT finished with exit code %d (Success=%s)"),
+		ReturnCode,
+		bSuccess ? TEXT("true") : TEXT("false"));
+
+	if (!bSuccess)
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("RunPackagingForMod: UAT reported failure. Check the AutomationTool log under:")
+			TEXT("  %%AppData%%/Unreal Engine/AutomationTool/Logs/"));
+	}
+
+	return bSuccess;
+
+}
+
+// ============================================================================
+// Status helpers
+// ============================================================================
+
+bool UWhiskerwoodModToolsLibrary::HasSourcePak(const UPAL_WhiskerwoodModSettings* ModSettings)
+{
+	if (!ModSettings)
+	{
+		return false;
+	}
+
+	int32 ChunkId = -1;
+#if WITH_EDITORONLY_DATA
+	ChunkId = ModSettings->GetChunkId();
+#endif
+
+	if (ChunkId <= 0)
+	{
+		return false;
+	}
+
+	UWhiskerwoodEditorUserSettings* Settings =
+		GetMutableDefault<UWhiskerwoodEditorUserSettings>();
+
+	if (!Settings || Settings->ProjectDirectory.IsEmpty())
+	{
+		return false;
+	}
+
+	const FString ProjectDir = Settings->ProjectDirectory;
+
+	const FString PakPattern = FString::Printf(
+		TEXT("pakchunk%d-*.pak"),
+		ChunkId
+	);
+
+	TArray<FString> FoundPaks;
+	IFileManager& FileManager = IFileManager::Get();
+
+	FileManager.FindFilesRecursive(
+		FoundPaks,
+		*ProjectDir,
+		*PakPattern,
+		/*Files*/ true,
+		/*Directories*/ false
+	);
+
+	return FoundPaks.Num() > 0;
+}
+
+bool UWhiskerwoodModToolsLibrary::IsModMoved(const UPAL_WhiskerwoodModSettings* ModSettings)
+{
+	if (!ModSettings)
+	{
+		return false;
+	}
+
+	FString ModDir = GetModDirectoryPath(ModSettings);
+	if (ModDir.IsEmpty())
+	{
+		return false;
+	}
+
+	FString ModDirName;
+#if WITH_EDITORONLY_DATA
+	ModDirName = ModSettings->ModDirName;
+#endif
+	if (ModDirName.IsEmpty())
+	{
+		ModDirName = ModSettings->GetName();
+	}
+
+	const FString PakPath = FPaths::Combine(ModDir, ModDirName + TEXT(".pak"));
+
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	return PlatformFile.FileExists(*PakPath);
+}
+
+
+bool UWhiskerwoodModToolsLibrary::CanDeployToWorkshop(const UPAL_WhiskerwoodModSettings* ModSettings)
+{
+	if (!IsModMoved(ModSettings))
+	{
+		return false;
+	}
+
+	UWhiskerwoodEditorUserSettings* Settings =
+		GetMutableDefault<UWhiskerwoodEditorUserSettings>();
+
+	if (!Settings)
+	{
+		return false;
+	}
+
+	return Settings->SteamAppID > 0;
+}
+
+// ============================================================================
+// Remove / Deploy
+// ============================================================================
+
+bool UWhiskerwoodModToolsLibrary::RemoveMovedMod(UPAL_WhiskerwoodModSettings* ModSettings)
+{
+	if (!ModSettings)
+	{
+		return false;
+	}
+
+	if (!IsModMoved(ModSettings))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("RemoveMovedMod: Mod '%s' is not moved; nothing to remove."),
+			*ModSettings->GetName());
+		return false;
+	}
+
+	FString ModDir = GetModDirectoryPath(ModSettings);
+	if (ModDir.IsEmpty())
+	{
+		return false;
+	}
+
+	return UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodDirectory(ModDir);
+}
+
+bool UWhiskerwoodModToolsLibrary::DeployModToWorkshopStaging(
+	UPAL_WhiskerwoodModSettings* ModSettings,
+	FString& OutStagingDir)
+{
+	OutStagingDir.Empty();
+
+	if (!ModSettings)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("DeployModToWorkshopStaging: ModSettings is null."));
+		return false;
+	}
+
+	if (!IsModMoved(ModSettings))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("DeployModToWorkshopStaging: Mod '%s' is not moved; Move to Saved/mods first."),
+			*ModSettings->GetName());
+		return false;
+	}
+
+	// Compute staging root based off the same LocalAppData/Whiskerwood root
+	const FString ModsDir = UWhiskerwoodFileIOLibrary::GetWhiskerwoodModsDirectory();
+	if (ModsDir.IsEmpty())
+	{
+		return false;
+	}
+
+	// ModsDir = <LocalAppData>/Whiskerwood/Saved/mods
+	// Step up twice to get <LocalAppData>/Whiskerwood
+	const FString SavedDir = FPaths::GetPath(ModsDir);      // .../Whiskerwood/Saved
+	const FString GameRootDir = FPaths::GetPath(SavedDir);  // .../Whiskerwood
+
+	const FString WorkshopRoot = FPaths::Combine(GameRootDir, TEXT("WorkshopStaging"));
+
+	FString ModDirName;
+#if WITH_EDITORONLY_DATA
+	ModDirName = ModSettings->ModDirName;
+#endif
+	if (ModDirName.IsEmpty())
+	{
+		ModDirName = ModSettings->GetName();
+	}
+
+	const FString StagingDir = FPaths::Combine(WorkshopRoot, ModDirName);
+
+	if (!UWhiskerwoodFileIOLibrary::EnsureWhiskerwoodDirectory(StagingDir))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("DeployModToWorkshopStaging: Failed to ensure staging directory '%s'."), *StagingDir);
+		return false;
+	}
+
+	const FString SourceModDir = GetModDirectoryPath(ModSettings);
+	const FString SourcePakPath = FPaths::Combine(SourceModDir, ModDirName + TEXT(".pak"));
+	const FString SourceDescriptorPath = FPaths::Combine(SourceModDir, ModDirName + TEXT(".uplugin"));
+
+	const FString TargetPakPath = FPaths::Combine(StagingDir, ModDirName + TEXT(".pak"));
+	const FString TargetDescriptorPath = FPaths::Combine(StagingDir, ModDirName + TEXT(".uplugin"));
+
+	bool bOk = true;
+
+	// Copy pak
+	if (!UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(
+			SourcePakPath,
+			TargetPakPath,
+			/*bOverwriteExisting*/ true))
+	{
+		UE_LOG(LogTemp, Error,
+			TEXT("DeployModToWorkshopStaging: Failed to copy pak from '%s' to '%s'."),
+			*SourcePakPath, *TargetPakPath);
+		bOk = false;
+	}
+
+	// Copy descriptor (if it exists)
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	if (PlatformFile.FileExists(*SourceDescriptorPath))
+	{
+		if (!UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(
+				SourceDescriptorPath,
+				TargetDescriptorPath,
+				/*bOverwriteExisting*/ true))
+		{
+			UE_LOG(LogTemp, Error,
+				TEXT("DeployModToWorkshopStaging: Failed to copy descriptor from '%s' to '%s'."),
+				*SourceDescriptorPath, *TargetDescriptorPath);
+			bOk = false;
+		}
+	}
+
+	if (!bOk)
+	{
+		return false;
+	}
+
+	OutStagingDir = StagingDir;
+
+	UE_LOG(LogTemp, Log,
+		TEXT("DeployModToWorkshopStaging: Staged mod '%s' to '%s'."),
+		*ModDirName, *StagingDir);
+
+	return true;
+}
+// -END MERGED FILE: Private/WhiskerwoodModToolsLibrary.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodModToolsStyle.cpp
+#include "WhiskerwoodModToolsStyle.h"
+
+#include "Interfaces/IPluginManager.h"
+#include "Styling/SlateStyle.h"
+#include "Styling/SlateStyleRegistry.h"
+#include "Brushes/SlateImageBrush.h"
+
+TSharedPtr<FSlateStyleSet> FWhiskerwoodModToolsStyle::StyleInstance = nullptr;
+
+// Helper macro for image brush
+#define IMAGE_BRUSH(RelativePath, Size) FSlateImageBrush(StyleSet->RootToContentDir(RelativePath, TEXT(".png")), Size)
+
+void FWhiskerwoodModToolsStyle::Initialize()
+{
+	if (!StyleInstance.IsValid())
+	{
+		StyleInstance = Create();
+		FSlateStyleRegistry::RegisterSlateStyle(*StyleInstance);
+	}
+}
+
+void FWhiskerwoodModToolsStyle::Shutdown()
+{
+	if (StyleInstance.IsValid())
+	{
+		FSlateStyleRegistry::UnRegisterSlateStyle(*StyleInstance);
+		StyleInstance.Reset();
+	}
+}
+
+FName FWhiskerwoodModToolsStyle::GetStyleSetName()
+{
+	static FName StyleSetName(TEXT("WhiskerwoodModToolsStyle"));
+	return StyleSetName;
+}
+
+const ISlateStyle& FWhiskerwoodModToolsStyle::Get()
+{
+	return *StyleInstance.Get();
+}
+
+TSharedRef<FSlateStyleSet> FWhiskerwoodModToolsStyle::Create()
+{
+	TSharedRef<FSlateStyleSet> StyleSet = MakeShareable(
+		new FSlateStyleSet(FWhiskerwoodModToolsStyle::GetStyleSetName())
+	);
+
+	// Point to the plugin's Resources folder
+	const FString ContentDir = IPluginManager::Get()
+		.FindPlugin(TEXT("WhiskerwoodModTools"))
+		->GetBaseDir() / TEXT("Resources");
+
+	StyleSet->SetContentRoot(ContentDir);
+
+	// Register our toolbar icon
+	const FVector2D IconSize(40.0f, 40.0f);
+	StyleSet->Set(
+		TEXT("WhiskerwoodModTools.ToolbarIcon"),
+		new IMAGE_BRUSH(TEXT("Icon_WWModTools_40"), IconSize)
+	);
+
+	return StyleSet;
+}
+
+#undef IMAGE_BRUSH
+// -END MERGED FILE: Private/WhiskerwoodModToolsStyle.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodModToolsUILibrary.cpp
+#include "WhiskerwoodModToolsUILibrary.h"
+
+#include "Components/TextBlock.h"
+#include "Components/EditableTextBox.h"
+#include "Components/Button.h"
+
+#include "WhiskerwoodModListItem.h"
+#include "WhiskerwoodModToolsLibrary.h"
+#include "WhiskerwoodEditorUserSettings.h"
+#include "PAL_WhiskerwoodModSettings.h"
+
+#include "Misc/Paths.h"
+#include "HAL/PlatformFileManager.h"
+#include "HAL/PlatformFile.h"
+
+#include "DesktopPlatformModule.h"
+#include "IDesktopPlatform.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Widgets/SWindow.h"
+#include "GenericPlatform/GenericApplication.h"
+
+namespace
+{
+	// Simple green/red colors for label status.
+	const FLinearColor ColorGreen(0.f, 1.f, 0.f, 1.f);
+	const FLinearColor ColorRed  (1.f, 0.f, 0.f, 1.f);
+
+	// Status colors for the mod row
+	const FLinearColor StatusOk    (0.4f, 1.f,   0.4f, 1.f);
+	const FLinearColor StatusWarn  (1.f,   1.f,  0.3f, 1.f);
+	const FLinearColor StatusError (1.f,   0.4f, 0.4f, 1.f);
+
+	void ApplyLabelColor(UTextBlock* Label, bool bOk)
+	{
+		if (!Label)
+		{
+			return;
+		}
+
+		const FLinearColor Color = bOk ? ColorGreen : ColorRed;
+		Label->SetColorAndOpacity(FSlateColor(Color));
+	}
+
+	void EnsureTextBoxValue(UEditableTextBox* TextBox, const FString& Value)
+	{
+		if (!TextBox)
+		{
+			return;
+		}
+
+		// Only fill if currently empty
+		if (TextBox->GetText().IsEmpty())
+		{
+			TextBox->SetText(FText::FromString(Value));
+		}
+	}
+
+	FString BuildModDirectoryFromSettings(UPAL_WhiskerwoodModSettings* ModSettings)
+	{
+		if (!ModSettings)
+		{
+			return FString();
+		}
+
+		// Root mods dir (Saved/mods) resolved from settings + auto-detect.
+		const FString BaseModsDir = UWhiskerwoodModToolsLibrary::ResolveModsDirectory();
+
+		FString DirName;
+
+#if WITH_EDITORONLY_DATA
+		DirName = ModSettings->ModDirName;
+#endif
+
+		if (DirName.IsEmpty())
+		{
+			// Fallback: asset name
+			DirName = ModSettings->GetName();
+		}
+
+		if (DirName.IsEmpty())
+		{
+			return FString();
+		}
+
+		FString FullPath = FPaths::Combine(BaseModsDir, DirName);
+		FPaths::NormalizeDirectoryName(FullPath);
+
+		return FullPath;
+	}
+}
+
+// ---------------------------------------------------------------------
+// Mod directory open helpers
+// ---------------------------------------------------------------------
+
+void UWhiskerwoodModToolsUILibrary::OpenModDirectoryForSettings(
+	UPAL_WhiskerwoodModSettings* ModSettings,
+	bool bCreateIfMissing)
+{
+#if WITH_EDITOR
+	if (!ModSettings)
+	{
+		return;
+	}
+
+	const FString ModDir = BuildModDirectoryFromSettings(ModSettings);
+	if (ModDir.IsEmpty())
+	{
+		return;
+	}
+
+	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
+
+	if (!PF.DirectoryExists(*ModDir))
+	{
+		if (bCreateIfMissing)
+		{
+			if (!PF.CreateDirectoryTree(*ModDir))
+			{
+				return; // failed to create
+			}
+		}
+		else
+		{
+			return;
+		}
+	}
+
+	FPlatformProcess::ExploreFolder(*ModDir);
+#endif // WITH_EDITOR
+}
+
+void UWhiskerwoodModToolsUILibrary::OpenModDirectoryForListItem(
+	UWhiskerwoodModListItem* ModItem,
+	bool bCreateIfMissing)
+{
+#if WITH_EDITOR
+	if (!ModItem)
+	{
+		return;
+	}
+
+	UPAL_WhiskerwoodModSettings* ModSettings = ModItem->ModSettings;
+	if (!ModSettings)
+	{
+		return;
+	}
+
+	OpenModDirectoryForSettings(ModSettings, bCreateIfMissing);
+#endif // WITH_EDITOR
+}
+
+// ---------------------------------------------------------------------
+// Refresh Settings UI
+// ---------------------------------------------------------------------
+
+void UWhiskerwoodModToolsUILibrary::RefreshSettingsBasicUI(
+	UTextBlock* ProjectLabel,
+	UEditableTextBox* ProjectTextBox,
+	UTextBlock* AppDataLabel,
+	UEditableTextBox* AppDataTextBox,
+	UTextBlock* ModsLabel,
+	UEditableTextBox* ModsTextBox,
+	UTextBlock* PlatformLabel,
+	UEditableTextBox* PlatformTextBox,
+	UTextBlock* SteamAppIDLabel,
+	UEditableTextBox* SteamAppIDTextBox,
+	UTextBlock* TempDeployLabel,
+	UEditableTextBox* TempDeployTextBox)
+{
+	// Grab settings (for PlatformName + SteamAppID defaults)
+	const UWhiskerwoodEditorUserSettings* Settings =
+		GetDefault<UWhiskerwoodEditorUserSettings>();
+
+	// -----------------------
+	// PROJECT DIRECTORY
+	// -----------------------
+
+	const FString ResolvedProject = UWhiskerwoodModToolsLibrary::ResolveProjectDirectory();
+	EnsureTextBoxValue(ProjectTextBox, ResolvedProject);
+
+	FString EffectiveProject = ResolvedProject;
+	if (ProjectTextBox)
+	{
+		const FString UserValue = ProjectTextBox->GetText().ToString();
+		if (!UserValue.IsEmpty())
+		{
+			EffectiveProject = UserValue;
+		}
+	}
+
+	const bool bProjectExists =
+		UWhiskerwoodModToolsLibrary::DoesDirectoryExist(EffectiveProject);
+
+	ApplyLabelColor(ProjectLabel, bProjectExists);
+
+	// -----------------------
+	// APPDATA DIRECTORY
+	// -----------------------
+
+	const FString ResolvedAppData = UWhiskerwoodModToolsLibrary::ResolveAppDataDirectory();
+	EnsureTextBoxValue(AppDataTextBox, ResolvedAppData);
+
+	FString EffectiveAppData = ResolvedAppData;
+	if (AppDataTextBox)
+	{
+		const FString UserValue = AppDataTextBox->GetText().ToString();
+		if (!UserValue.IsEmpty())
+		{
+			EffectiveAppData = UserValue;
+		}
+	}
+
+	const bool bAppDataExists =
+		UWhiskerwoodModToolsLibrary::DoesDirectoryExist(EffectiveAppData);
+
+	ApplyLabelColor(AppDataLabel, bAppDataExists);
+
+	// -----------------------
+	// MODS DIRECTORY
+	// -----------------------
+
+	const FString ResolvedMods = UWhiskerwoodModToolsLibrary::ResolveModsDirectory();
+	EnsureTextBoxValue(ModsTextBox, ResolvedMods);
+
+	FString EffectiveMods = ResolvedMods;
+	if (ModsTextBox)
+	{
+		const FString UserValue = ModsTextBox->GetText().ToString();
+		if (!UserValue.IsEmpty())
+		{
+			EffectiveMods = UserValue;
+		}
+	}
+
+	const bool bModsExists =
+		UWhiskerwoodModToolsLibrary::DoesDirectoryExist(EffectiveMods);
+
+	ApplyLabelColor(ModsLabel, bModsExists);
+
+	// -----------------------
+	// PLATFORM
+	// -----------------------
+
+	FString HumanPlatform = TEXT("Windows");
+	if (Settings && !Settings->PlatformName.IsEmpty())
+	{
+		HumanPlatform = Settings->PlatformName;
+	}
+
+	// If the text box is empty, fill with the human platform name
+	if (PlatformTextBox)
+	{
+		if (PlatformTextBox->GetText().IsEmpty())
+		{
+			PlatformTextBox->SetText(FText::FromString(HumanPlatform));
+		}
+		else
+		{
+			HumanPlatform = PlatformTextBox->GetText().ToString();
+		}
+	}
+
+	// Map to UAT platform; if we get something non-empty back, call it valid
+	const FString UATPlatform =
+		UWhiskerwoodModToolsLibrary::ResolveUATPlatformName();
+
+	const bool bPlatformOk = !UATPlatform.IsEmpty();
+	ApplyLabelColor(PlatformLabel, bPlatformOk);
+
+	// -----------------------
+	// STEAM APP ID
+	// -----------------------
+
+	int32 SteamAppID = 0;
+	if (Settings)
+	{
+		SteamAppID = Settings->SteamAppID;
+	}
+
+	// Fill text box if empty
+	if (SteamAppIDTextBox)
+	{
+		if (SteamAppIDTextBox->GetText().IsEmpty())
+		{
+			const FString SteamStr = FString::FromInt(SteamAppID);
+			SteamAppIDTextBox->SetText(FText::FromString(SteamStr));
+		}
+
+		// Re-parse from whatever is in the box now
+		const FString UserSteamStr = SteamAppIDTextBox->GetText().ToString();
+		if (!UserSteamStr.IsEmpty())
+		{
+			SteamAppID = FCString::Atoi(*UserSteamStr);
+		}
+	}
+
+	const bool bSteamOk = (SteamAppID > 0);
+	ApplyLabelColor(SteamAppIDLabel, bSteamOk);
+
+	// -----------------------
+	// TEMP DEPLOY DIRECTORY
+	// -----------------------
+
+	const FString ResolvedTemp =
+		UWhiskerwoodModToolsLibrary::ResolveTempDeployDirectory();
+	EnsureTextBoxValue(TempDeployTextBox, ResolvedTemp);
+
+	FString EffectiveTemp = ResolvedTemp;
+	if (TempDeployTextBox)
+	{
+		const FString UserValue = TempDeployTextBox->GetText().ToString();
+		if (!UserValue.IsEmpty())
+		{
+			EffectiveTemp = UserValue;
+		}
+	}
+
+	const bool bTempExists =
+		UWhiskerwoodModToolsLibrary::DoesDirectoryExist(EffectiveTemp);
+
+	ApplyLabelColor(TempDeployLabel, bTempExists);
+}
+
+// ---------------------------------------------------------------------
+// Save Settings from UI
+// ---------------------------------------------------------------------
+
+void UWhiskerwoodModToolsUILibrary::SaveSettingsFromBasicUI(
+	UEditableTextBox* ProjectTextBox,
+	UEditableTextBox* AppDataTextBox,
+	UEditableTextBox* ModsTextBox,
+	UEditableTextBox* PlatformTextBox,
+	UEditableTextBox* SteamAppIDTextBox,
+	UEditableTextBox* TempDeployTextBox)
+{
+	UWhiskerwoodEditorUserSettings* Settings =
+		GetMutableDefault<UWhiskerwoodEditorUserSettings>();
+
+	if (!Settings)
+	{
+		return;
+	}
+
+	// Project Directory
+	if (ProjectTextBox)
+	{
+		Settings->ProjectDirectory = ProjectTextBox->GetText().ToString();
+	}
+
+	// AppData Directory
+	if (AppDataTextBox)
+	{
+		Settings->AppDataDirectory = AppDataTextBox->GetText().ToString();
+	}
+
+	// Mods Directory
+	if (ModsTextBox)
+	{
+		Settings->ModsDirectory = ModsTextBox->GetText().ToString();
+	}
+
+	// Platform Name
+	if (PlatformTextBox)
+	{
+		Settings->PlatformName = PlatformTextBox->GetText().ToString();
+	}
+
+	// Steam App ID
+	if (SteamAppIDTextBox)
+	{
+		const FString SteamStr = SteamAppIDTextBox->GetText().ToString();
+		Settings->SteamAppID = SteamStr.IsEmpty() ? 0 : FCString::Atoi(*SteamStr);
+	}
+
+	// Temp Deploy Directory
+	if (TempDeployTextBox)
+	{
+		Settings->TempDeployDirectory = TempDeployTextBox->GetText().ToString();
+	}
+
+	// Persist to EditorPerProjectUserSettings.ini
+	Settings->SaveSettings();
+}
+
+// ---------------------------------------------------------------------
+// Optional: SettingsPaths UI
+// ---------------------------------------------------------------------
+
+void UWhiskerwoodModToolsUILibrary::RefreshSettingsPathsUI(
+	UTextBlock* ProjectLabel,
+	UEditableTextBox* ProjectTextBox,
+	UTextBlock* ModsLabel,
+	UEditableTextBox* ModsTextBox,
+	UTextBlock* AppDataLabel,
+	UEditableTextBox* AppDataTextBox,
+	UTextBlock* LogsLabel,
+	UEditableTextBox* LogsTextBox,
+	UTextBlock* TempDeployLabel,
+	UEditableTextBox* TempDeployTextBox,
+	UTextBlock* PakLabel,
+	UEditableTextBox* PakTextBox)
+{
+	// Basic reuse: call the simpler helper for Project/AppData/Mods/Platform/Steam/Temp
+	RefreshSettingsBasicUI(
+		ProjectLabel,
+		ProjectTextBox,
+		AppDataLabel,
+		AppDataTextBox,
+		ModsLabel,
+		ModsTextBox,
+		/*PlatformLabel*/ nullptr,
+		/*PlatformTextBox*/ nullptr,
+		/*SteamAppIDLabel*/ nullptr,
+		/*SteamAppIDTextBox*/ nullptr,
+		TempDeployLabel,
+		TempDeployTextBox
+	);
+
+	// Logs
+	const FString LogsDir = UWhiskerwoodModToolsLibrary::ResolveBaseLogsDirectory();
+	EnsureTextBoxValue(LogsTextBox, LogsDir);
+	const bool bLogsExists = UWhiskerwoodModToolsLibrary::DoesDirectoryExist(
+		LogsTextBox ? LogsTextBox->GetText().ToString() : LogsDir);
+	ApplyLabelColor(LogsLabel, bLogsExists);
+
+	// Pak
+	const FString PakDir = UWhiskerwoodModToolsLibrary::ResolvePakDirectory();
+	EnsureTextBoxValue(PakTextBox, PakDir);
+	const bool bPakExists = UWhiskerwoodModToolsLibrary::DoesDirectoryExist(
+		PakTextBox ? PakTextBox->GetText().ToString() : PakDir);
+	ApplyLabelColor(PakLabel, bPakExists);
+}
+
+// ---------------------------------------------------------------------
+// Set Temp Deploy to TempWorkshop default
+// ---------------------------------------------------------------------
+
+void UWhiskerwoodModToolsUILibrary::SetTempDeployToWorkshopDefault(
+	UTextBlock* TempDeployLabel,
+	UEditableTextBox* TempDeployTextBox)
+{
+	// Base appdata dir (resolved from settings + autodetect)
+	const FString AppDataDir = UWhiskerwoodModToolsLibrary::ResolveAppDataDirectory();
+
+	// Use folder name "TempWorkshop" under AppData root
+	FString TempWorkshopDir = FPaths::Combine(AppDataDir, TEXT("TempWorkshop"));
+	FPaths::NormalizeDirectoryName(TempWorkshopDir);
+
+	// Create directory tree
+	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
+	const bool bCreatedOrExists = PF.CreateDirectoryTree(*TempWorkshopDir);
+
+	// Update textbox
+	if (TempDeployTextBox)
+	{
+		TempDeployTextBox->SetText(FText::FromString(TempWorkshopDir));
+	}
+
+	// Update settings + save
+	if (UWhiskerwoodEditorUserSettings* Settings = GetMutableDefault<UWhiskerwoodEditorUserSettings>())
+	{
+		Settings->TempDeployDirectory = TempWorkshopDir;
+		Settings->SaveSettings();
+	}
+
+	// Color label based on success
+	ApplyLabelColor(TempDeployLabel, bCreatedOrExists);
+}
+
+// ---------------------------------------------------------------------
+// Generic open/browse helpers
+// ---------------------------------------------------------------------
+
+void UWhiskerwoodModToolsUILibrary::OpenDirectoryFromTextBox(
+	UEditableTextBox* SourceTextBox,
+	bool bCreateIfMissing)
+{
+	if (!SourceTextBox)
+	{
+		return;
+	}
+
+	FString DirPath = SourceTextBox->GetText().ToString().TrimStartAndEnd();
+
+	// If empty, fall back to something sensible so the button isn't useless.
+	if (DirPath.IsEmpty())
+	{
+		// Default: resolved project directory
+		DirPath = UWhiskerwoodModToolsLibrary::ResolveProjectDirectory();
+	}
+
+	if (DirPath.IsEmpty())
+	{
+		return;
+	}
+
+	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
+
+	if (!PF.DirectoryExists(*DirPath))
+	{
+		if (bCreateIfMissing)
+		{
+			if (!PF.CreateDirectoryTree(*DirPath))
+			{
+				// Could log here if you want
+				return;
+			}
+		}
+		else
+		{
+			return;
+		}
+	}
+
+	// At this point, DirPath exists – open in Explorer/Finder/etc.
+	FPlatformProcess::ExploreFolder(*DirPath);
+}
+
+void UWhiskerwoodModToolsUILibrary::BrowseForDirectoryIntoTextBox(
+	UEditableTextBox* TargetTextBox,
+	FText DialogTitle)
+{
+	if (!TargetTextBox)
+	{
+		return;
+	}
+
+	IDesktopPlatform* DesktopPlatform = FDesktopPlatformModule::Get();
+	if (!DesktopPlatform)
+	{
+		return;
+	}
+
+	// Determine a parent window handle for the dialog (optional but nicer).
+	void* ParentWindowHandle = nullptr;
+
+	if (FSlateApplication::IsInitialized())
+	{
+		TSharedPtr<SWindow> ParentWindow =
+			FSlateApplication::Get().FindBestParentWindowForDialogs(nullptr);
+
+		if (ParentWindow.IsValid() && ParentWindow->GetNativeWindow().IsValid())
+		{
+			ParentWindowHandle = ParentWindow->GetNativeWindow()->GetOSWindowHandle();
+		}
+	}
+
+	// Use current textbox content as starting folder, or project dir as fallback.
+	FString DefaultPath = TargetTextBox->GetText().ToString().TrimStartAndEnd();
+	if (DefaultPath.IsEmpty())
+	{
+		DefaultPath = UWhiskerwoodModToolsLibrary::ResolveProjectDirectory();
+	}
+
+	FString ChosenDir;
+	const bool bPicked = DesktopPlatform->OpenDirectoryDialog(
+		ParentWindowHandle,
+		DialogTitle.ToString(),
+		DefaultPath,
+		ChosenDir
+	);
+
+	if (!bPicked || ChosenDir.IsEmpty())
+	{
+		return;
+	}
+
+	// Normalize and assign to textbox
+	FPaths::NormalizeDirectoryName(ChosenDir);
+	TargetTextBox->SetText(FText::FromString(ChosenDir));
+}
+
+// ---------------------------------------------------------------------
+// Open special dirs (Mods / Logs / TempWorkshop)
+// ---------------------------------------------------------------------
+
+void UWhiskerwoodModToolsUILibrary::OpenWhiskerwoodSpecialDirectory(
+	EWhiskerwoodSpecialDirectory DirectoryType,
+	bool bCreateIfMissing)
+{
+#if WITH_EDITOR
+	FString TargetDir;
+
+	switch (DirectoryType)
+	{
+	case EWhiskerwoodSpecialDirectory::Mods:
+		// e.g. C:/Users/<User>/AppData/Local/Whiskerwood/Saved/mods
+		TargetDir = UWhiskerwoodModToolsLibrary::ResolveModsDirectory();
+		break;
+
+	case EWhiskerwoodSpecialDirectory::Logs:
+		// AppData/Local/Whiskerwood/Saved/Logs
+		TargetDir = UWhiskerwoodModToolsLibrary::ResolveBaseLogsDirectory();
+		break;
+
+	case EWhiskerwoodSpecialDirectory::TempWorkshop:
+	default:
+		// Use your Temp Deploy / Temp Workshop directory
+		TargetDir = UWhiskerwoodModToolsLibrary::ResolveTempDeployDirectory();
+		break;
+	}
+
+	if (TargetDir.IsEmpty())
+	{
+		return;
+	}
+
+	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
+
+	if (!PF.DirectoryExists(*TargetDir))
+	{
+		if (bCreateIfMissing)
+		{
+			if (!PF.CreateDirectoryTree(*TargetDir))
+			{
+				return; // failed to create
+			}
+		}
+		else
+		{
+			return; // don't create, don't open
+		}
+	}
+
+	FPlatformProcess::ExploreFolder(*TargetDir);
+#endif // WITH_EDITOR
+}
+
+// ---------------------------------------------------------------------
+// MOD LIST ROW UI
+// ---------------------------------------------------------------------
+
+void UWhiskerwoodModToolsUILibrary::RefreshModListRowUI(
+	UWhiskerwoodModListItem* ModItem,
+	UTextBlock* NameText,
+	UTextBlock* ChunkIdText,
+	UTextBlock* StatusText,
+	UButton* MoveButton,
+	UButton* RemoveButton,
+	UButton* DeployButton)
+{
+	// Default: everything disabled / blank
+	auto SetButtonEnabled = [](UButton* Button, bool bEnabled)
+	{
+		if (Button)
+		{
+			Button->SetIsEnabled(bEnabled);
+		}
+	};
+
+	// Safe defaults
+	SetButtonEnabled(MoveButton, false);
+	SetButtonEnabled(RemoveButton, false);
+	SetButtonEnabled(DeployButton, false);
+
+	if (NameText)
+	{
+		NameText->SetText(FText::GetEmpty());
+	}
+	if (ChunkIdText)
+	{
+		ChunkIdText->SetText(FText::GetEmpty());
+	}
+	if (StatusText)
+	{
+		StatusText->SetText(FText::FromString(TEXT("No Mod")));
+		StatusText->SetColorAndOpacity(FSlateColor(StatusError));
+	}
+
+	if (!ModItem || !ModItem->ModSettings)
+	{
+		// Nothing more to do
+		return;
+	}
+
+	UPAL_WhiskerwoodModSettings* ModSettings = ModItem->ModSettings;
+
+	// --------------------------
+	// Name & ChunkID display
+	// --------------------------
+
+	FString DisplayName = ModItem->ModName;
+	if (DisplayName.IsEmpty())
+	{
+#if WITH_EDITORONLY_DATA
+		if (!ModSettings->ModName.IsEmpty())
+		{
+			DisplayName = ModSettings->ModName;
+		}
+		else
+#endif
+		{
+			DisplayName = ModSettings->GetName();
+		}
+	}
+
+	if (NameText)
+	{
+		NameText->SetText(FText::FromString(DisplayName));
+	}
+
+	int32 ChunkIdValue = 0;
+#if WITH_EDITORONLY_DATA
+	ChunkIdValue = ModSettings->GetChunkId();
+#endif
+
+	if (ChunkIdText)
+	{
+		if (ChunkIdValue > 0)
+		{
+			ChunkIdText->SetText(FText::AsNumber(ChunkIdValue));
+		}
+		else
+		{
+			ChunkIdText->SetText(FText::FromString(TEXT("-")));
+		}
+	}
+
+	// --------------------------
+	// Status calculation
+	// --------------------------
+
+	const bool bHasSourcePak    = UWhiskerwoodModToolsLibrary::HasSourcePak(ModSettings);
+	const bool bIsMoved      = UWhiskerwoodModToolsLibrary::IsModMoved(ModSettings);
+	const bool bCanDeploySteam  = UWhiskerwoodModToolsLibrary::CanDeployToWorkshop(ModSettings);
+
+	FText Status = FText::GetEmpty();
+	FLinearColor StatusColor = StatusWarn;
+
+	if (ChunkIdValue <= 0)
+	{
+		Status      = FText::FromString(TEXT("Missing ChunkID"));
+		StatusColor = StatusError;
+	}
+	else if (!bIsMoved && !bHasSourcePak)
+	{
+		// Nothing built and nothing moved yet
+		Status      = FText::FromString(TEXT("No Pak Found"));
+		StatusColor = StatusError;
+	}
+	else if (!bIsMoved && bHasSourcePak)
+	{
+		// Pak exists in project, but hasn't been copied into the mods folder
+		Status      = FText::FromString(TEXT("Ready to be Moved"));
+		StatusColor = StatusOk;
+	}
+	else if (bIsMoved)
+	{
+		// Mod has been moved into Saved/mods (regardless of source pak)
+		if (bCanDeploySteam)
+		{
+			Status      = FText::FromString(TEXT("Moved | Ready for Deploy"));
+			StatusColor = StatusOk;
+		}
+		else
+		{
+			Status      = FText::FromString(TEXT("Moved | Steam Not Configured"));
+			StatusColor = StatusWarn;
+		}
+	}
+	else
+	{
+		// Fallback - shouldn't normally hit
+		Status      = FText::FromString(TEXT("Unknown State"));
+		StatusColor = StatusWarn;
+	}
+
+	if (StatusText)
+	{
+		StatusText->SetText(Status);
+		StatusText->SetColorAndOpacity(FSlateColor(StatusColor));
+	}
+
+	// --------------------------
+	// Button enabling rules
+	// --------------------------
+
+	// Move -> only when there's a source pak and it hasn't been moved yet
+	SetButtonEnabled(MoveButton,  bHasSourcePak && !bIsMoved && ChunkIdValue > 0);
+
+	// Remove -> only if the mod is currently in Saved/mods
+	SetButtonEnabled(RemoveButton, bIsMoved);
+
+	// Deploy -> only if moved and Steam is configured
+	SetButtonEnabled(DeployButton, bIsMoved && bCanDeploySteam);
+}
+// -END MERGED FILE: Private/WhiskerwoodModToolsUILibrary.cpp
+
+// -BEGIN MERGED FILE: Private/WhiskerwoodPageSwitcherWidget.cpp
+#include "WhiskerwoodPageSwitcherWidget.h"
+
+#include "Components/WidgetSwitcher.h"
+
+UWhiskerwoodPageSwitcherWidget::UWhiskerwoodPageSwitcherWidget(
+	const FObjectInitializer& ObjectInitializer)
+	: Super(ObjectInitializer)
+	, ActivePageId(NAME_None)
+{
+}
+
+void UWhiskerwoodPageSwitcherWidget::NativeOnInitialized()
+{
+	Super::NativeOnInitialized();
+
+	// If user didn't configure Pages explicitly, auto-build from children
+	BuildPagesFromSwitcherIfEmpty();
+
+	// Optionally enforce that PageSwitcher has enough children for the indices
+	if (PageSwitcher)
+	{
+		const int32 NumChildren = PageSwitcher->GetNumWidgets();
+		for (const FWhiskerwoodPageDef& Page : Pages)
+		{
+			if (Page.SwitcherIndex < 0 || Page.SwitcherIndex >= NumChildren)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("WhiskerwoodPageSwitcherWidget: Page '%s' has invalid SwitcherIndex %d (NumWidgets=%d)"),
+					*Page.PageId.ToString(), Page.SwitcherIndex, NumChildren);
+			}
+		}
+	}
+
+	// Optionally select first valid page on init
+	for (const FWhiskerwoodPageDef& Page : Pages)
+	{
+		if (!Page.PageId.IsNone())
+		{
+			ShowPageById(Page.PageId);
+			break;
+		}
+	}
+}
+
+void UWhiskerwoodPageSwitcherWidget::BuildPagesFromSwitcherIfEmpty()
+{
+	if (!PageSwitcher)
+	{
+		return;
+	}
+
+	if (Pages.Num() > 0)
+	{
+		// User configured them manually; don't override.
+		return;
+	}
+
+	const int32 NumChildren = PageSwitcher->GetNumWidgets();
+	for (int32 Index = 0; Index < NumChildren; ++Index)
+	{
+		if (UWidget* Child = PageSwitcher->GetWidgetAtIndex(Index))
+		{
+			const FName ChildName = Child->GetFName();
+
+			FWhiskerwoodPageDef NewPage;
+			NewPage.PageId = ChildName;              // Use widget name as Id
+			NewPage.DisplayName = FText::FromName(ChildName);
+			NewPage.SwitcherIndex = Index;
+
+			Pages.Add(NewPage);
+		}
+	}
+
+	if (Pages.Num() == 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("WhiskerwoodPageSwitcherWidget: PageSwitcher has no children; no pages to build."));
+	}
+	else
+	{
+		UE_LOG(LogTemp, Log,
+			TEXT("WhiskerwoodPageSwitcherWidget: Auto-built %d pages from PageSwitcher children."), Pages.Num());
+	}
+}
+
+bool UWhiskerwoodPageSwitcherWidget::ShowPageById(FName PageId)
+{
+	if (!PageSwitcher || PageId.IsNone())
+	{
+		return false;
+	}
+
+	for (const FWhiskerwoodPageDef& Page : Pages)
+	{
+		if (Page.PageId == PageId)
+		{
+			return ShowPageByIndex(Page.SwitcherIndex);
+		}
+	}
+
+	UE_LOG(LogTemp, Warning,
+		TEXT("WhiskerwoodPageSwitcherWidget: No page with Id '%s' found."),
+		*PageId.ToString());
+	return false;
+}
+
+bool UWhiskerwoodPageSwitcherWidget::ShowPageByIndex(int32 Index)
+{
+	if (!PageSwitcher)
+	{
+		return false;
+	}
+
+	const int32 NumChildren = PageSwitcher->GetNumWidgets();
+	if (Index < 0 || Index >= NumChildren)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("WhiskerwoodPageSwitcherWidget: Invalid index %d (NumWidgets=%d)."),
+			Index, NumChildren);
+		return false;
+	}
+
+	PageSwitcher->SetActiveWidgetIndex(Index);
+
+	// Update ActivePageId from the Pages array if possible
+	FName NewId = NAME_None;
+	for (const FWhiskerwoodPageDef& Page : Pages)
+	{
+		if (Page.SwitcherIndex == Index)
+		{
+			NewId = Page.PageId;
+			break;
+		}
+	}
+
+	ActivePageId = NewId;
+
+	OnActivePageChanged(ActivePageId, Index);
+
+	return true;
+}
+
+FText UWhiskerwoodPageSwitcherWidget::GetDisplayNameForPageId(FName PageId) const
+{
+	for (const FWhiskerwoodPageDef& Page : Pages)
+	{
+		if (Page.PageId == PageId)
+		{
+			return Page.DisplayName;
+		}
+	}
+
+	return FText::GetEmpty();
+}
+// -END MERGED FILE: Private/WhiskerwoodPageSwitcherWidget.cpp
+
+// -BEGIN MERGED FILE: Private/WiskerwoodModToolsEditorWidget.cpp
+#include "WiskerwoodModToolsEditorWidget.h"
+
+#include "WhiskerwoodLogWatcherSubsystem.h"
+
+#if WITH_EDITOR
+#include "Editor.h"
+#endif
+
+UWhiskerwoodLogWatcherSubsystem* UWiskerwoodModToolsEditorWidget::GetLogWatcher() const
+{
+
+	if (GEditor)
+	{
+		return GEditor->GetEditorSubsystem<UWhiskerwoodLogWatcherSubsystem>();
+	}
+
+	return nullptr;
+}
+
+void UWiskerwoodModToolsEditorWidget::NativeConstruct()
+{
+	Super::NativeConstruct();
+
+
+	if (UWhiskerwoodLogWatcherSubsystem* Subsystem = GetLogWatcher())
+	{
+		Subsystem->OnLogLines.AddDynamic(
+			this,
+			&UWiskerwoodModToolsEditorWidget::OnLogLines_Internal
+		);
+	}
+
+}
+
+void UWiskerwoodModToolsEditorWidget::NativeDestruct()
+{
+
+	if (UWhiskerwoodLogWatcherSubsystem* Subsystem = GetLogWatcher())
+	{
+		Subsystem->OnLogLines.RemoveDynamic(
+			this,
+			&UWiskerwoodModToolsEditorWidget::OnLogLines_Internal
+		);
+	}
+
+
+	Super::NativeDestruct();
+}
+
+void UWiskerwoodModToolsEditorWidget::OnLogLines_Internal(
+	FName ConfigId,
+	const FString& DisplayName,
+	const FString& FilePath,
+	const TArray<FString>& NewLines
+)
+{
+	// Route into BP; BP may or may not implement this.
+	HandleLogLines(ConfigId, DisplayName, FilePath, NewLines);
+}
+// -END MERGED FILE: Private/WiskerwoodModToolsEditorWidget.cpp
+
+// -END MERGED DIRECTORY: Private
+
+// -BEGIN MERGED DIRECTORY: Public
+// -BEGIN MERGED FILE: Public/PAL_WhiskerwoodModSettings.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Engine/PrimaryAssetLabel.h"
+#include "PAL_WhiskerwoodModSettings.generated.h"
+
+/**
+ * Editor-only mod descriptor + chunk cooking label.
+ *
+ * This asset never ships with the game because all of its fields are
+ * in WITH_EDITORONLY_DATA, which strips it during packaging.
+ *
+ * It drives mod metadata AND Primary Asset Label cooking rules.
+ */
+UCLASS(BlueprintType, EditInlineNew, meta=(DisplayName="Whiskerwood Mod Settings (PAL)"))
+class WHISKERWOODMODTOOLS_API UPAL_WhiskerwoodModSettings : public UPrimaryAssetLabel
+{
+	GENERATED_BODY()
+
+public:
+	UPAL_WhiskerwoodModSettings();
+
+	/** Force this PAL to use PrimaryAssetType "WhiskerwoodModSettings"
+	 *  so it matches the AssetManagerSettings entry.
+	 */
+	virtual FPrimaryAssetId GetPrimaryAssetId() const override;
+
+#if WITH_EDITOR
+	// Handle migration from old fields and keep Rules consistent.
+	virtual void PostLoad() override;
+	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
+#endif
+
+#if WITH_EDITORONLY_DATA
+
+	/** Readable name for UI / workshop */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Mod Info")
+	FString ModName;
+
+	/** One-line description */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Mod Info")
+	FString Description;
+
+	/** Internal folder name for the mod (e.g. "MoreStarterWhiskers") */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Mod Info")
+	FString ModDirName;
+
+	/** Version shown in the generated .uplugin (e.g. "1.0.0") */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Mod Info")
+	FString Version;
+
+	/** Author name (e.g. "Shenjima") */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Mod Info")
+	FString CreatedBy;
+
+	/**
+	 * Optional Steam Workshop "publishedfileid" for this mod.
+	 * Store the ID here after first publish / creation.
+	 * Empty string means "no Workshop item yet".
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Mod Packaging|Steam")
+	FString SteamWorkshopId;
+
+	/**
+	 * If true, every asset referenced by this PAL will be cooked.
+	 * (This is the usual PrimaryAssetLabel "Cook Rule" default.)
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Rules")
+	bool bCookAll = true;
+
+	// ----------------------------------------------------------------------
+	// Chunk ID configuration
+	// ----------------------------------------------------------------------
+
+	// Legacy field so existing PAL assets don’t explode.
+	// This used to be your “ChunkID” in the Whiskerwood|ModUtils|Cooking section.
+	UPROPERTY(EditAnywhere, Category="Whiskerwood|ModUtils|Deprecated", meta=(
+		DeprecatedProperty,
+		DeprecationMessage="Use the Chunk ID in the Rules category instead."
+	))
+	int32 LegacyChunkID = -1;
+
+	/**
+	 * If true, your helper logic can derive ChunkId from the mod folder
+	 * name (e.g. hash or mapping). If false, OverrideChunkId is used.
+	 *
+	 * NOTE: The actual engine chunk used by UAT is Rules.ChunkId;
+	 * this flag just controls how GetChunkId() decides what to return.
+	 */
+	UPROPERTY(EditAnywhere, Category="Whiskerwood|ModUtils|Cooking")
+	bool bUseModFolderNameForChunk = true;
+
+	/**
+	 * Explicit chunk to use when bUseModFolderNameForChunk == false.
+	 * GetChunkId() will prefer this when > 0.
+	 */
+	UPROPERTY(EditAnywhere, Category="Whiskerwood|ModUtils|Cooking", meta=(EditCondition="!bUseModFolderNameForChunk"))
+	int32 OverrideChunkId = -1;
+
+	/**
+	 * Returns the effective ChunkId this mod should use for its .pak.
+	 * This is what Move/Remove/Deploy should call.
+	 *
+	 * Priority:
+	 *   1) If !bUseModFolderNameForChunk and OverrideChunkId > 0 → OverrideChunkId
+	 *   2) If Rules.ChunkId > 0 → Rules.ChunkId (per-asset override)
+	 *   3) If LegacyChunkID > 0 → LegacyChunkID (migration)
+	 *   4) Otherwise → AssetManager effective rules (type-level, i.e. 20)
+	 */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Cooking")
+	int32 GetChunkId() const;
+
+#endif // WITH_EDITORONLY_DATA
+};
+// -END MERGED FILE: Public/PAL_WhiskerwoodModSettings.h
+
+// -BEGIN MERGED FILE: Public/PDA_WhiskerwoodModSettings.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Engine/DataAsset.h"
+#include "PDA_WhiskerwoodModSettings.generated.h"
+
+/**
+ * Primary Data Asset describing a Whiskerwood mod.
+ *
+ * One asset per mod, named in PascalCase (e.g. PDA_MoreStarterWhiskers).
+ * This drives:
+ *  - Mod display in your dashboard
+ *  - .uplugin (or JSON) descriptor generation
+ *  - ChunkID / directory naming
+ */
+UCLASS(BlueprintType)
+class WHISKERWOODMODTOOLS_API UPDA_WhiskerwoodModSettings : public UPrimaryDataAsset
+{
+	GENERATED_BODY()
+
+public:
+
+	// Optional: override to give this asset a custom primary asset type.
+	virtual FPrimaryAssetId GetPrimaryAssetId() const override;
+
+	/** Human-readable mod name (will also be used in descriptor Name) */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Whiskerwood|ModUtils|Settings")
+	FString ModName;
+
+	/** Description shown in the dashboard and in the .uplugin descriptor */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Whiskerwood|ModUtils|Settings", meta=(MultiLine=true))
+	FString Description;
+
+	/** Version string, e.g. "1.0.0" */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Whiskerwood|ModUtils|Settings")
+	FString Version;
+
+	/** Author / creator name, e.g. "Shenjima" */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Whiskerwood|ModUtils|Settings")
+	FString CreatedBy;
+
+	/**
+	 * Directory name used for this mod inside the mods folder.
+	 * For example: "MoreStarterWhiskers"
+	 *
+	 * Final path will typically be:
+	 *   <AppData>/Local/Whiskerwood/Saved/mods/<ModDirName>/
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Whiskerwood|ModUtils|Settings")
+	FString ModDirName;
+
+	/**
+	 * Chunk ID to use for this mod's .pak, as established in PAL.
+	 * e.g., 1001, 1002, etc.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Whiskerwood|ModUtils|Settings")
+	int32 ChunkID = 0;
+};
+// -END MERGED FILE: Public/PDA_WhiskerwoodModSettings.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodEditorUserSettings.h
+// WhiskerwoodEditorUserSettings.h
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "UObject/NoExportTypes.h"
+#include "WhiskerwoodEditorUserSettings.generated.h"
+
+/**
+ * Per-user editor settings for Whiskerwood Mod Tools.
+ *
+ * Stored in EditorPerProjectUserSettings.ini
+ * (so each dev / machine can have their own paths).
+ */
+
+USTRUCT(BlueprintType)
+struct WHISKERWOODMODTOOLS_API FWhiskerwoodLogWatchConfig
+{
+	GENERATED_BODY()
+
+public:
+
+	/** Stable identifier for this watched log, used as a key. */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Logs")
+	FName Id;
+
+	/** Friendly name for the UI. */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Logs")
+	FString DisplayName;
+
+	/** Full path to the log file on disk. */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Logs")
+	FString LogFilePath;
+
+	/** Whether this entry is currently enabled for watching. */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Logs")
+	bool bEnabled;
+
+	FWhiskerwoodLogWatchConfig()
+		: Id(NAME_None)
+		, bEnabled(true)
+	{
+	}
+};
+
+UCLASS(Config=EditorPerProjectUserSettings, BlueprintType)
+class WHISKERWOODMODTOOLS_API UWhiskerwoodEditorUserSettings : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	UWhiskerwoodEditorUserSettings(const FObjectInitializer& ObjectInitializer);
+
+	// --------------------------------------------------------------------
+	// Core Paths
+	// --------------------------------------------------------------------
+
+	/**
+	 * Mods Directory - Directory for the game itself where Saved/mods is.
+	 *
+	 * Example:
+	 *   C:/Users/<User>/AppData/Local/Whiskerwood/Saved/mods
+	 *
+	 * If empty, tools will fall back to their own auto-detection based
+	 * on LOCALAPPDATA and WhiskerwoodFileIOLibrary.
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Paths")
+	FString ModsDirectory;
+
+	/**
+	 * Project Directory - Project root for this Whiskerwood SDK project.
+	 *
+	 * Example:
+	 *   D:/WW/WhiskerwoodProject/Whiskerwood-Project/
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Paths")
+	FString ProjectDirectory;
+
+	/**
+	 * Pak Directory - Directory where pakchunk*.pak files are generated.
+	 *
+	 * Sometimes this is under:
+	 *   <Project>/Saved/StagedBuilds/WindowsNoEditor/Whiskerwood/Content/Paks
+	 * or another platform-specific location.
+	 *
+	 * If empty, tools are allowed to recursively search from ProjectDirectory
+	 * to find pakchunk<ChunkID>-*.pak files.
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Paths")
+	FString PakDirectory;
+
+	/**
+	 * App Data Directory - Root of Whiskerwood's AppData directory.
+	 *
+	 * Example:
+	 *   C:/Users/<User>/AppData/Local/Whiskerwood
+	 *
+	 * From this, we can derive:
+	 *   Saved/mods
+	 *   Saved/Logs
+	 *   Workshop/TempDeploy/...
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Paths")
+	FString AppDataDirectory;
+
+	/**
+	 * Platform name - human-readable platform, e.g. "Windows", "Linux".
+	 *
+	 * This is used both:
+	 *  - To influence where we look for pak output
+	 *  - To map to the UAT platform name (Win64, Linux, etc.).
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Platform")
+	FString PlatformName;
+
+	// --------------------------------------------------------------------
+	// Steam / Workshop
+	// --------------------------------------------------------------------
+
+	/**
+	 * Steam App ID - ID for Whiskerwood on Steam.
+	 *
+	 * Should default to 2489330.
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Steam")
+	int32 SteamAppID;
+
+	/**
+	 * Temporary Deploy Directory - base directory used to stage mods
+	 * for Steam Workshop packaging.
+	 *
+	 * Example default:
+	 *   C:/Users/<User>/AppData/Local/Whiskerwood/WorkshopTemp
+	 *
+	 * The mod tools will create subfolders per mod inside this directory
+	 * when preparing workshop uploads.
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Steam")
+	FString TempDeployDirectory;
+
+	// --------------------------------------------------------------------
+	// Logs / Diagnostics
+	// --------------------------------------------------------------------
+
+	/**
+	 * Base Logs Directory - game's log directory under AppData.
+	 *
+	 * Example:
+	 *   C:/Users/<User>/AppData/Local/Whiskerwood/Saved/Logs
+	 *
+	 * This is useful both for watching the live game logs and for
+	 * utilities that dump datatables to JSON into this area.
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Logs")
+	FString BaseLogsDirectory;
+
+	/**
+	 * List of log files the editor subsystem should watch.
+	 *
+	 * This is per-user, per-project configuration.
+	 *
+	 * NOTE: In the future, the JSON dump viewer panel can use
+	 * BaseLogsDirectory and this list to discover and display
+	 * datatable JSON dumps.
+	 */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Logs")
+	TArray<FWhiskerwoodLogWatchConfig> LogWatchConfigs;
+
+	// --------------------------------------------------------------------
+	// Misc / Utilities
+	// --------------------------------------------------------------------
+
+	/** Last copied .pak file path (for quick re-use / debugging). */
+	UPROPERTY(EditAnywhere, Config, BlueprintReadWrite, Category="Whiskerwood|ModUtils|Misc")
+	FString LastCopiedPakPath;
+
+public:
+
+	/** Writes UPROPERTY(Config) values to EditorPerProjectUserSettings.ini */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Settings", meta=(DevelopmentOnly))
+	void SaveSettings();
+
+	/** Gets the singleton settings object instance */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Settings", meta=(DevelopmentOnly))
+	static UWhiskerwoodEditorUserSettings* GetSettings();
+};
+// -END MERGED FILE: Public/WhiskerwoodEditorUserSettings.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodFileIOLibrary.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
+#include "WhiskerwoodFileIOLibrary.generated.h"
+
+/**
+ * File/directory IO helpers that are hard-limited
+ * so that any write/delete destination must contain "Whiskerwood".
+ *
+ * Intended for Editor Utility Widgets & other editor tools that manage
+ * Whiskerwood mod .pak files and metadata.
+ *
+ * NOTE: Class is always compiled so packaging (UnrealGame target) works.
+ * Actual destructive behavior is guarded in the .cpp with WITH_EDITOR.
+ */
+UCLASS()
+class WHISKERWOODMODTOOLS_API UWhiskerwoodFileIOLibrary : public UBlueprintFunctionLibrary
+{
+    GENERATED_BODY()
+
+public:
+
+    /**
+     * Returns the Whiskerwood mods directory under the current user's Local AppData.
+     *
+     * Example (Windows):
+     *   C:/Users/<User>/AppData/Local/Whiskerwood/Saved/mods
+     */
+    UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|File IO", meta=(DevelopmentOnly))
+    static FString GetWhiskerwoodModsDirectory();
+
+    /**
+     * Deletes a file on disk, but ONLY if the normalized path contains "Whiskerwood".
+     */
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|File IO", meta=(DevelopmentOnly))
+    static bool DeleteWhiskerwoodFile(const FString& FilePath);
+
+    /**
+     * Recursively deletes a directory on disk, but ONLY if the normalized path contains "Whiskerwood".
+     */
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|File IO", meta=(DevelopmentOnly))
+    static bool DeleteWhiskerwoodDirectory(const FString& DirectoryPath);
+
+    /**
+     * Ensures that a directory (and parents) exists.
+     * Only succeeds if the normalized path contains "Whiskerwood".
+     */
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|File IO", meta=(DevelopmentOnly))
+    static bool EnsureWhiskerwoodDirectory(const FString& DirectoryPath);
+
+    /**
+     * Copies a file from SourceFilePath to DestFilePath.
+     * Source can be anywhere, but DestFilePath MUST contain "Whiskerwood".
+     *
+     * @param SourceFilePath Full path to the file to copy from.
+     * @param DestFilePath Full path to the file to copy to (must contain "Whiskerwood").
+     * @param bOverwriteExisting If true, will overwrite an existing file at destination.
+     */
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|File IO", meta=(DevelopmentOnly))
+    static bool CopyWhiskerwoodFile(const FString& SourceFilePath, const FString& DestFilePath, bool bOverwriteExisting);
+
+    /**
+     * Writes simple text to a file in a Whiskerwood path (e.g. metadata next to the .pak).
+     * Will auto-create the directory tree if needed.
+     *
+     * @param FilePath Full path of the file to write to (must contain "Whiskerwood").
+     * @param Text Text content to write.
+     * @param bAllowOverwrite If false and the file already exists, this will fail.
+     */
+    UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|File IO", meta=(DevelopmentOnly))
+    static bool WriteWhiskerwoodTextFile(const FString& FilePath, const FString& Text, bool bAllowOverwrite);
+};
+// -END MERGED FILE: Public/WhiskerwoodFileIOLibrary.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodLogWatcherSubsystem.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "EditorSubsystem.h"
+#include "Containers/Ticker.h" // For FTSTicker::FDelegateHandle
+
+#include "WhiskerwoodLogWatcherSubsystem.generated.h"
+
+class UWhiskerwoodEditorUserSettings;
+
+/**
+ * Called whenever new lines are detected in a watched log file.
+ *
+ * @param ConfigId    The Id from FWhiskerwoodLogWatchConfig.
+ * @param DisplayName Friendly name from the config.
+ * @param FilePath    Full path to the log file.
+ * @param NewLines    All new lines since last scan.
+ */
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_FourParams(
+	FWhiskerwoodOnLogLines,
+	FName, ConfigId,
+	const FString&, DisplayName,
+	const FString&, FilePath,
+	const TArray<FString>&, NewLines
+);
+
+/** Internal runtime state for a given watched log. */
+struct FWhiskerwoodLogRuntimeState
+{
+	int32 LastLineCount = 0;
+	bool bHadFile = false;
+};
+
+/**
+ * Editor subsystem that watches configured log files and
+ * broadcasts new lines to interested widgets / tools.
+ */
+UCLASS()
+class WHISKERWOODMODTOOLS_API UWhiskerwoodLogWatcherSubsystem : public UEditorSubsystem
+{
+	GENERATED_BODY()
+
+public:
+
+	// UEditorSubsystem
+	virtual void Initialize(FSubsystemCollectionBase& Collection) override;
+	virtual void Deinitialize() override;
+
+	/**
+	 * Rebuilds runtime state from UWhiskerwoodEditorUserSettings::LogWatchConfigs.
+	 * Call this after modifying settings via BP.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Subsystems|LogWatcher", meta=(DevelopmentOnly))
+	void RefreshFromSettings();
+
+	/**
+	 * Convenience BP helper to toggle a given config entry.
+	 * This also calls SaveSettings() and RefreshFromSettings().
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Subsystems|LogWatcher", meta=(DevelopmentOnly))
+	void SetConfigEnabled(FName ConfigId, bool bEnabled);
+
+	/** Delegate fired when new lines are observed in a watched log. */
+	UPROPERTY(BlueprintAssignable, Category="Whiskerwood|ModUtils|Subsystems|LogWatcher")
+	FWhiskerwoodOnLogLines OnLogLines;
+
+private:
+
+	/** Ticker callback that periodically polls log files. */
+	bool HandleTicker(float DeltaTime);
+
+	/** Performs a single scan over all configured log files. */
+	void ScanOnce();
+
+	/** Helper to access the settings object. */
+	UWhiskerwoodEditorUserSettings* GetEditorSettings() const;
+
+private:
+
+	/** Map from config Id -> runtime line-count state. */
+	TMap<FName, FWhiskerwoodLogRuntimeState> RuntimeStates;
+
+	/** Handle to the ticker registration. */
+	FTSTicker::FDelegateHandle TickerHandle;
+
+	/** Seconds between scans; tweak as desired. */
+	float ScanIntervalSeconds = 1.0f;
+
+	/** Accumulated time since last scan. */
+	float TimeSinceLastScan = 0.0f;
+};
+// -END MERGED FILE: Public/WhiskerwoodLogWatcherSubsystem.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodModListItem.h
+// WhiskerwoodModListItem.h
+
+#pragma once
+
+#include "CoreMinimal.h"
+#include "UObject/NoExportTypes.h"
+#include "WhiskerwoodModListItem.generated.h"
+
+class UPAL_WhiskerwoodModSettings;
+
+/**
+ * Lightweight UObject used as a row item in the Editor Utility ListView
+ * for mods. Wraps a UPAL_WhiskerwoodModSettings asset.
+ */
+UCLASS(BlueprintType) // <-- important!
+class WHISKERWOODMODTOOLS_API UWhiskerwoodModListItem : public UObject
+{
+	GENERATED_BODY()
+
+public:
+
+	/** The backing Primary Asset Label that defines this mod. */
+	UPROPERTY(BlueprintReadOnly, Category="Whiskerwood|ModUtils|Widget Row")
+	UPAL_WhiskerwoodModSettings* ModSettings = nullptr;
+
+	/** Convenience: Mod Name (copied from PAL). */
+	UPROPERTY(BlueprintReadOnly, Category="Whiskerwood|ModUtils|Widget Row")
+	FString ModName;
+
+	/** Convenience: ChunkID (copied from PAL). */
+	UPROPERTY(BlueprintReadOnly, Category="Whiskerwood|ModUtils|Widget Row")
+	int32 ChunkId = 0;
+
+	/** Convenience: Full Mods directory path for this mod (Saved/mods/<ModDirName>). */
+	UPROPERTY(BlueprintReadOnly, Category="Whiskerwood|ModUtils|Widget Row")
+	FString ModDirectoryPath;
+};
+// -END MERGED FILE: Public/WhiskerwoodModListItem.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodModListRowWidget.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Blueprint/UserWidget.h"
+#include "Blueprint/IUserObjectListEntry.h"
+#include "WhiskerwoodModListRowWidget.generated.h"
+
+class UTextBlock;
+class UButton;
+class UWhiskerwoodModListItem;
+class UPAL_WhiskerwoodModSettings;
+
+/**
+ * Editor-only row widget for the Mod List.
+ * 
+ * This is used as the base class for WBP_ModListRow.
+ * It:
+ *  - Receives a UWhiskerwoodModListItem from the ListView
+ *  - Calls the UI helper to refresh text/status/buttons
+ *  - Wires Move/Remove/Deploy/OpenFolder buttons to C++ helpers
+ */
+UCLASS()
+class WHISKERWOODMODTOOLS_API UWhiskerwoodModListRowWidget
+	: public UUserWidget
+	, public IUserObjectListEntry
+{
+	GENERATED_BODY()
+
+public:
+
+	/** The backing data for this row (list item object). */
+	UPROPERTY(BlueprintReadOnly, Category="Whiskerwood|ModUtils")
+	UWhiskerwoodModListItem* ModItem = nullptr;
+
+	// These will be bound from the BP (WBP_ModListRow)
+	UPROPERTY(meta=(BindWidgetOptional))
+	UTextBlock* NameText;
+
+	UPROPERTY(meta=(BindWidgetOptional))
+	UTextBlock* ChunkIdText;
+
+	UPROPERTY(meta=(BindWidgetOptional))
+	UTextBlock* StatusText;
+
+	UPROPERTY(meta=(BindWidgetOptional))
+	UButton* MoveButton;
+
+	UPROPERTY(meta=(BindWidgetOptional))
+	UButton* RemoveButton;
+
+	UPROPERTY(meta=(BindWidgetOptional))
+	UButton* DeployButton;
+
+	UPROPERTY(meta=(BindWidgetOptional))
+	UButton* OpenFolderButton;
+
+public:
+	// IUserObjectListEntry implementation
+	virtual void NativeOnListItemObjectSet(UObject* ListItemObject) override;
+
+protected:
+	// Widget lifecycle
+
+	void BindButtonsIfNeeded();
+	// Button handlers
+	UFUNCTION()
+	void HandleMoveClicked();
+
+	UFUNCTION()
+	void HandleRemoveClicked();
+
+	UFUNCTION()
+	void HandleDeployClicked();
+
+	UFUNCTION()
+	void HandleOpenFolderClicked();
+
+public:
+	/** Public helper: refresh UI state from ModItem. */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI")
+	void RefreshRow();
+
+private:
+	bool bButtonsBound = false;
+};
+// -END MERGED FILE: Public/WhiskerwoodModListRowWidget.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodModTools.h
+// Public/WhiskerwoodModTools.h
+
+#pragma once
+
+#include "Modules/ModuleManager.h"
+#include "Delegates/Delegate.h" // For FDelegateHandle, FSimpleDelegate
+
+class UEditorUtilityWidgetBlueprint;
+
+/**
+ * Main editor module for Whiskerwood Mod Tools.
+ *
+ * Responsibilities:
+ * - Register a toolbar button in the Level Editor (near the Play controls).
+ * - When clicked, open the EUW_WWModToolsEditorWidget as a tab.
+ */
+class FWhiskerwoodModToolsModule : public IModuleInterface
+{
+public:
+
+	/** IModuleInterface implementation */
+	virtual void StartupModule() override;
+	virtual void ShutdownModule() override;
+
+	/** Handler for clicking the toolbar button (must be public for CreateRaw). */
+	void OnOpenModToolsDashboardClicked();
+
+private:
+
+	/** Called by UToolMenus once it is ready; we register our toolbar button here. */
+	void RegisterMenus();
+
+	/** Helper: Load the EUW BP for the dashboard. */
+	UEditorUtilityWidgetBlueprint* LoadModToolsEditorWidget() const;
+
+private:
+
+	/** Handle to the ToolMenus startup callback so we can unregister it on shutdown. */
+	FDelegateHandle ToolMenusStartupHandle;
+};
+// -END MERGED FILE: Public/WhiskerwoodModTools.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodModToolsLibrary.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
+#include "WhiskerwoodModToolsLibrary.generated.h"
+
+class UPAL_WhiskerwoodModSettings;
+class UWhiskerwoodModListItem;
+
+/**
+ * Editor-only modding tools for Whiskerwood.
+ *
+ * All of these are meant for Editor Utility Widgets / Editor scripting.
+ */
+UCLASS()
+class WHISKERWOODMODTOOLS_API UWhiskerwoodModToolsLibrary : public UBlueprintFunctionLibrary
+{
+	GENERATED_BODY()
+
+public:
+
+	// --------------------------------------------------------------------
+	// Resolve helpers (smart defaults + overrides)
+	// --------------------------------------------------------------------
+
+	/** Resolve Project Directory (settings override → current project dir). */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Resolve")
+	static FString ResolveProjectDirectory();
+
+	/** Resolve Mods Directory (settings override → LOCALAPPDATA/Whiskerwood/Saved/mods). */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Resolve")
+	static FString ResolveModsDirectory();
+
+	/** Resolve App Data Directory (settings override → derived from Mods dir). */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Resolve")
+	static FString ResolveAppDataDirectory();
+
+	/** Resolve Base Logs Directory (settings override → AppData/Saved/Logs). */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Resolve")
+	static FString ResolveBaseLogsDirectory();
+
+	/** Resolve Temp Deploy Directory (settings override → AppData/WorkshopTemp). */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Resolve")
+	static FString ResolveTempDeployDirectory();
+
+	/**
+	 * Resolve Pak Directory:
+	 *  - Settings.PakDirectory if set
+	 *  - Otherwise, try to auto-detect by scanning for pakchunk*.pak under ProjectDirectory
+	 *    and returning the first directory that contains them.
+	 *  - Returns empty string if nothing is found.
+	 */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Resolve")
+	static FString ResolvePakDirectory();
+
+	/**
+	 * Map human PlatformName ("Windows", "Linux", etc.) to UAT platform argument
+	 * ("Win64", "Linux", etc.).
+	 */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Resolve")
+	static FString ResolveUATPlatformName();
+
+	// --------------------------------------------------------------------
+	// Validation helpers (for UI indicators)
+	// --------------------------------------------------------------------
+
+	/** True if the string looks like a non-empty path (cheap sanity check). */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Validate")
+	static bool IsNonEmptyPath(const FString& Path);
+
+	/** True if the directory exists on disk. */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|FileIO")
+	static bool DoesDirectoryExist(const FString& DirPath);
+
+	/** True if the file exists on disk. */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|FileIO")
+	static bool DoesFileExist(const FString& FilePath);
+	
+	/**
+	 * Finds all UPAL_WhiskerwoodModSettings assets in the project and
+	 * builds UWhiskerwoodModListItem objects for a ListView.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Widget Row", meta=(DevelopmentOnly))
+	static void GetAllModListItems(TArray<UWhiskerwoodModListItem*>& OutItems);
+
+	/**
+	 * Finds and loads all UPAL_WhiskerwoodModSettings assets in the project.
+	 * Editor-only (uses AssetRegistry).
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Settings", meta=(DevelopmentOnly))
+	static void GetAllWhiskerwoodModSettings(TArray<UPAL_WhiskerwoodModSettings*>& OutModSettings);
+
+	/**
+	 * Builds the full disk path to the mod directory for a given mod PAL.
+	 *
+	 * Example result:
+	 *   C:/Users/<User>/AppData/Local/Whiskerwood/Saved/mods/MoreStarterWhiskers
+	 */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Settings", meta=(DevelopmentOnly))
+	static FString GetModDirectoryPath(const UPAL_WhiskerwoodModSettings* ModSettings);
+
+	/**
+	 * Writes a minimal .uplugin-style JSON descriptor for the given mod
+	 * into the target file path.
+	 *
+	 * The JSON will look like:
+	 * {
+	 *     "Name" : "More Starter Whiskers",
+	 *     "Description" : "...",
+	 *     "Version" : "1.0",
+	 *     "CreatedBy" : "Shenjima",
+	 *     "SteamAppID" : 123456,
+	 *     "SteamWorkshopId" : "9876543210"
+	 * }
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Settings", meta=(DevelopmentOnly))
+	static bool WriteModDescriptorJson(const UPAL_WhiskerwoodModSettings* ModSettings,
+	                                   const FString& TargetFilePath);
+
+	/**
+	 * Validates settings and ChunkID, then:
+	 *  - Searches under ProjectDir for pakchunk<ChunkID>-*.pak
+	 *  - Ensures the mod directory exists under AppData/Local/Whiskerwood/Saved/mods
+	 *  - Copies/overwrites the .pak to <ModDir>/<ModDirName>.pak
+	 *  - Writes <ModDir>/<ModDirName>.uplugin JSON descriptor
+	 *
+	 * NOTE: This does NOT run packaging. It assumes the .pak for the given
+	 * ChunkID already exists (e.g., after a global "Pak" run).
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Pak", meta=(DevelopmentOnly))
+	static bool MovePakMod(UPAL_WhiskerwoodModSettings* ModSettings);
+
+	/**
+	 * Runs UAT once to build/cook/package the project and generate all
+	 * chunk paks (pakchunkX-*.pak).
+	 *
+	 * Intended for a single top-level "Pak" button in the dashboard.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Pak", meta=(DevelopmentOnly))
+	static bool RunPackagingForMod();
+
+	// ---------------------------------------------------------------------
+	// Row status helpers for the Dashboard List Grid
+	// ---------------------------------------------------------------------
+
+	/** True if a pakchunk<ChunkID>-*.pak exists somewhere under ProjectDir. */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Widget Row|Status", meta=(DevelopmentOnly))
+	static bool HasSourcePak(const UPAL_WhiskerwoodModSettings* ModSettings);
+
+	/** True if <ModsDir>/<ModDirName>/<ModDirName>.pak exists (i.e., deployed). */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Widget Row|Status", meta=(DevelopmentOnly))
+	static bool IsModMoved(const UPAL_WhiskerwoodModSettings* ModSettings);
+
+	/**
+	 * True if the mod is deployed AND a SteamAppID is configured.
+	 * Use this to gate-enable a "Deploy" button.
+	 */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|Widget Row|Status", meta=(DevelopmentOnly))
+	static bool CanDeployToWorkshop(const UPAL_WhiskerwoodModSettings* ModSettings);
+
+	// ---------------------------------------------------------------------
+	// Actions for Move / Remove / Deploy buttons
+	// ---------------------------------------------------------------------
+
+	/**
+	 * Removes the deployed mod directory:
+	 *   <AppData>/Local/Whiskerwood/Saved/mods/<ModDirName>/
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Widget Row", meta=(DevelopmentOnly))
+	static bool RemoveMovedMod(UPAL_WhiskerwoodModSettings* ModSettings);
+
+	/**
+	 * Copies the deployed mod files (pak + .uplugin) into a Workshop staging
+	 * directory under the same Whiskerwood LocalAppData root.
+	 *
+	 * Resulting path:
+	 *   <LocalAppData>/Whiskerwood/WorkshopStaging/<ModDirName>/
+	 *
+	 * Returns true on success and fills OutStagingDir with the full path.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Widget Row|Steam", meta=(DevelopmentOnly))
+	static bool DeployModToWorkshopStaging(UPAL_WhiskerwoodModSettings* ModSettings,
+	                                       FString& OutStagingDir);
+};
+// -END MERGED FILE: Public/WhiskerwoodModToolsLibrary.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodModToolsStyle.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Styling/ISlateStyle.h"
+
+class FWhiskerwoodModToolsStyle
+{
+public:
+	static void Initialize();
+	static void Shutdown();
+
+	/** Get the style set name. */
+	static FName GetStyleSetName();
+
+	/** Shortcut to the style set itself. */
+	static const ISlateStyle& Get();
+
+private:
+	static TSharedPtr<class FSlateStyleSet> StyleInstance;
+
+	static TSharedRef<class FSlateStyleSet> Create();
+};
+// -END MERGED FILE: Public/WhiskerwoodModToolsStyle.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodModToolsUILibrary.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
+#include "WhiskerwoodModToolsUILibrary.generated.h"
+
+class UTextBlock;
+class UEditableTextBox;
+class UButton;
+class UWhiskerwoodModListItem;
+class UPAL_WhiskerwoodModSettings;
+
+UENUM(BlueprintType)
+enum class EWhiskerwoodSpecialDirectory : uint8
+{
+	Mods        UMETA(DisplayName="Mods Directory"),
+	Logs        UMETA(DisplayName="Logs Directory"),
+	TempWorkshop UMETA(DisplayName="Temp Workshop Directory")
+};
+
+/**
+ * UI helper library for Whiskerwood Mod Tools.
+ *
+ * These are "one node" helpers to keep your Blueprints clean:
+ *  - Settings panel: update text + colors from settings + autodetect.
+ *  - Mod row: update labels + status + button enabled state from ModItem.
+ */
+UCLASS()
+class WHISKERWOODMODTOOLS_API UWhiskerwoodModToolsUILibrary : public UBlueprintFunctionLibrary
+{
+	GENERATED_BODY()
+
+public:
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI")
+	static void RefreshSettingsBasicUI(
+		UTextBlock* ProjectLabel,
+		UEditableTextBox* ProjectTextBox,
+		UTextBlock* AppDataLabel,
+		UEditableTextBox* AppDataTextBox,
+		UTextBlock* ModsLabel,
+		UEditableTextBox* ModsTextBox,
+		UTextBlock* PlatformLabel,
+		UEditableTextBox* PlatformTextBox,
+		UTextBlock* SteamAppIDLabel,
+		UEditableTextBox* SteamAppIDTextBox,
+		UTextBlock* TempDeployLabel,
+		UEditableTextBox* TempDeployTextBox
+	);
+
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI")
+	static void SaveSettingsFromBasicUI(
+		UEditableTextBox* ProjectTextBox,
+		UEditableTextBox* AppDataTextBox,
+		UEditableTextBox* ModsTextBox,
+		UEditableTextBox* PlatformTextBox,
+		UEditableTextBox* SteamAppIDTextBox,
+		UEditableTextBox* TempDeployTextBox
+	);
+
+	// --------------------------------------------------------------------
+	// SETTINGS PANEL HELPER
+	// --------------------------------------------------------------------
+
+	/**
+	 * Refreshes the Settings UI for core paths.
+	 *
+	 * - If a TextBox is empty, it is filled with the resolved default
+	 *   (ResolveXDirectory()).
+	 * - Each Label is colored green if the directory exists, red otherwise.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI")
+	static void RefreshSettingsPathsUI(
+		// Project
+		UTextBlock* ProjectLabel,
+		UEditableTextBox* ProjectTextBox,
+
+		// Mods
+		UTextBlock* ModsLabel,
+		UEditableTextBox* ModsTextBox,
+
+		// AppData root
+		UTextBlock* AppDataLabel,
+		UEditableTextBox* AppDataTextBox,
+
+		// Base Logs
+		UTextBlock* LogsLabel,
+		UEditableTextBox* LogsTextBox,
+
+		// Temp Deploy
+		UTextBlock* TempDeployLabel,
+		UEditableTextBox* TempDeployTextBox,
+
+		// Pak directory (optional – can be empty if no paks yet)
+		UTextBlock* PakLabel,
+		UEditableTextBox* PakTextBox
+	);
+
+	// --------------------------------------------------------------------
+	// MOD LIST ROW HELPER
+	// --------------------------------------------------------------------
+
+	/**
+	 * Refreshes a Mod List Row UI based on its ModItem.
+	 *
+	 * - Sets Name and ChunkId text.
+	 * - Computes a Status string + color:
+	 *     "Missing ChunkID", "No Pak Found", "Ready to be Moved",
+	 *     "Moved | Ready for Deploy", "Moved | Steam Not Configured", etc.
+	 * - Enables/disables Move, Remove, Deploy buttons:
+	 *     Move   -> HasSourcePak && !IsModMoved
+	 *     Remove -> IsModMoved
+	 *     Deploy -> IsModMoved && CanDeployToWorkshop
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI")
+	static void RefreshModListRowUI(
+		UWhiskerwoodModListItem* ModItem,
+		UTextBlock* NameText,
+		UTextBlock* ChunkIdText,
+		UTextBlock* StatusText,
+		UButton* MoveButton,
+		UButton* RemoveButton,
+		UButton* DeployButton
+	);
+
+	/**
+	 * Sets the Temp Deploy directory to a default "TempWorkshop" folder
+	 * under the resolved AppData directory.
+	 *
+	 * Example:
+	 *   AppDataDirectory = C:/Users/<User>/AppData/Local/Whiskerwood
+	 *   TempWorkshopDir  = C:/Users/<User>/AppData/Local/Whiskerwood/TempWorkshop
+	 *
+	 * This helper:
+	 *  - Computes that path using ResolveAppDataDirectory().
+	 *  - Creates the directory if it doesn't exist.
+	 *  - Updates the TempDeployTextBox.
+	 *  - Writes the value into WhiskerwoodEditorUserSettings::TempDeployDirectory.
+	 *  - Colors the TempDeployLabel green if creation/exists succeeded, red otherwise.
+	 */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI")
+	static void SetTempDeployToWorkshopDefault(
+		UTextBlock* TempDeployLabel,
+		UEditableTextBox* TempDeployTextBox
+	);
+
+	// Generic open/browse helpers
+
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI", meta=(DevelopmentOnly))
+	static void OpenDirectoryFromTextBox(
+		UEditableTextBox* SourceTextBox,
+		bool bCreateIfMissing
+	);
+
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI", meta=(DevelopmentOnly))
+	static void BrowseForDirectoryIntoTextBox(
+		UEditableTextBox* TargetTextBox,
+		FText DialogTitle
+	);
+
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI", meta=(DevelopmentOnly))
+	static void OpenWhiskerwoodSpecialDirectory(
+		EWhiskerwoodSpecialDirectory DirectoryType,
+		bool bCreateIfMissing
+	);
+
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI", meta=(DevelopmentOnly))
+	static void OpenModDirectoryForListItem(
+		UWhiskerwoodModListItem* ModItem,
+		bool bCreateIfMissing
+	);
+
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|UI", meta=(DevelopmentOnly))
+	static void OpenModDirectoryForSettings(
+		UPAL_WhiskerwoodModSettings* ModSettings,
+		bool bCreateIfMissing
+	);
+};
+// -END MERGED FILE: Public/WhiskerwoodModToolsUILibrary.h
+
+// -BEGIN MERGED FILE: Public/WhiskerwoodPageSwitcherWidget.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Blueprint/UserWidget.h"
+#include "WhiskerwoodPageSwitcherWidget.generated.h"
+
+class UWidgetSwitcher;
+
+/**
+ * Simple data for one logical page in the switcher.
+ */
+USTRUCT(BlueprintType)
+struct WHISKERWOODMODTOOLS_API FWhiskerwoodPageDef
+{
+	GENERATED_BODY()
+
+public:
+
+	/** Stable logical ID you use from code/Blueprint, e.g. "Dashboard", "Logs" */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Whiskerwood|ModUtils|PageSwitcher|Page")
+	FName PageId;
+
+	/** Optional display text for UI / tabs */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Whiskerwood|ModUtils|PageSwitcher|Page")
+	FText DisplayName;
+
+	/** Index in the underlying UWidgetSwitcher */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Whiskerwood|ModUtils|PageSwitcher|Page")
+	int32 SwitcherIndex = 0;
+
+	FWhiskerwoodPageDef()
+		: PageId(NAME_None)
+		, SwitcherIndex(0)
+	{
+	}
+};
+
+/**
+ * Lightweight wrapper around a UWidgetSwitcher that lets you work with
+ * named pages instead of raw indices.
+ *
+ * Usage:
+ *  - Make a BP widget inheriting from this C++ class.
+ *  - Add a WidgetSwitcher to the designer and name it "PageSwitcher".
+ *  - EITHER:
+ *      - Fill Pages[] manually, OR
+ *      - Leave Pages empty and it will auto-map children by widget name.
+ *  - In your top menu / tab buttons, call ShowPageById("Logs"), etc.
+ */
+UCLASS()
+class WHISKERWOODMODTOOLS_API UWhiskerwoodPageSwitcherWidget : public UUserWidget
+{
+	GENERATED_BODY()
+
+public:
+
+	UWhiskerwoodPageSwitcherWidget(const FObjectInitializer& ObjectInitializer);
+
+protected:
+
+	virtual void NativeOnInitialized() override;
+
+	/** The underlying widget switcher you place in the BP designer. */
+	UPROPERTY(meta=(BindWidget))
+	TObjectPtr<UWidgetSwitcher> PageSwitcher;
+
+	/** Declarative list of pages. Configure this in the BP defaults panel. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category="Whiskerwood|ModUtils|PageSwitcher")
+	TArray<FWhiskerwoodPageDef> Pages;
+
+	/** Id of the currently active page (if known). */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category="Whiskerwood|ModUtils|PageSwitcher")
+	FName ActivePageId;
+
+public:
+
+	/** Show a page by logical Id. Returns false if Id not found. */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|PageSwitcher")
+	bool ShowPageById(FName PageId);
+
+	/** Show a page by index; updates ActivePageId if there is a matching entry. */
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|PageSwitcher")
+	bool ShowPageByIndex(int32 Index);
+
+	/** Get Id of currently active page (NAME_None if unknown) */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|PageSwitcher")
+	FName GetActivePageId() const { return ActivePageId; }
+
+	/** Find the configured display name for a PageId (or empty text). */
+	UFUNCTION(BlueprintPure, Category="Whiskerwood|ModUtils|PageSwitcher")
+	FText GetDisplayNameForPageId(FName PageId) const;
+
+	/** Fired whenever the active page changes. */
+	UFUNCTION(BlueprintImplementableEvent, Category="Whiskerwood|ModUtils|PageSwitcher")
+	void OnActivePageChanged(FName NewPageId, int32 NewIndex);
+
+private:
+
+	/** If Pages is empty, auto-populate it from PageSwitcher children. */
+	void BuildPagesFromSwitcherIfEmpty();
+};
+// -END MERGED FILE: Public/WhiskerwoodPageSwitcherWidget.h
+
+// -BEGIN MERGED FILE: Public/WiskerwoodModToolsEditorWidget.h
+#pragma once
+
+#include "CoreMinimal.h"
+#include "EditorUtilityWidget.h"
+
+#include "WiskerwoodModToolsEditorWidget.generated.h"
+
+class UWhiskerwoodLogWatcherSubsystem;
+
+/**
+ * Base Editor Utility Widget for Whiskerwood modding tools.
+ */
+UCLASS(Abstract)
+class WHISKERWOODMODTOOLS_API UWiskerwoodModToolsEditorWidget : public UEditorUtilityWidget
+{
+	GENERATED_BODY()
+
+public:
+
+	UFUNCTION(BlueprintCallable, Category="Whiskerwood|ModUtils|Subsystems|LogWatcher")
+	UWhiskerwoodLogWatcherSubsystem* GetLogWatcher() const;
+
+protected:
+
+	virtual void NativeConstruct() override;
+	virtual void NativeDestruct() override;
+
+	UFUNCTION(BlueprintImplementableEvent, Category="Whiskerwood|ModUtils|Subsystems|LogWatcher")
+	void HandleLogLines(
+		FName ConfigId,
+		const FString& DisplayName,
+		const FString& FilePath,
+		const TArray<FString>& NewLines
+	);
+
+private:
+
+	UFUNCTION()
+	void OnLogLines_Internal(
+		FName ConfigId,
+		const FString& DisplayName,
+		const FString& FilePath,
+		const TArray<FString>& NewLines
+	);
+};
+// -END MERGED FILE: Public/WiskerwoodModToolsEditorWidget.h
+
+// -END MERGED DIRECTORY: Public
+
+// -END MERGED DIRECTORY: .
+

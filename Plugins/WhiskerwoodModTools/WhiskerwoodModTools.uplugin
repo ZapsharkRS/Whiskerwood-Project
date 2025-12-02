@@ -1,0 +1,24 @@
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "WhiskerwoodModTools",
+	"Description": "Whiskerwood Mod Tool provides all the necessary tools needed to help you debug, pak, deploy, and keep track of your mods.",
+	"Category": "Other",
+	"CreatedBy": "Zapshark Technologies",
+	"CreatedByURL": "https://zapshark.com",
+	"DocsURL": "",
+	"MarketplaceURL": "",
+	"SupportURL": "",
+	"CanContainContent": true,
+	"IsBetaVersion": false,
+	"IsExperimentalVersion": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "WhiskerwoodModTools",
+			"Type": "Editor",
+			"LoadingPhase": "Default"
+		}
+	]
+}
