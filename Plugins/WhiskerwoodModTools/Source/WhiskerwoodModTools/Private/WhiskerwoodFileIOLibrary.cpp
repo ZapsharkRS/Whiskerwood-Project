@@ -52,7 +52,7 @@ namespace
 
 FString UWhiskerwoodFileIOLibrary::GetWhiskerwoodModsDirectory()
 {
-#if WITH_EDITOR
+
     // Prefer LOCALAPPDATA to avoid the Documents/OneDrive issue.
     FString LocalAppData = FPlatformMisc::GetEnvironmentVariable(TEXT("LOCALAPPDATA"));
 
@@ -65,16 +65,12 @@ FString UWhiskerwoodFileIOLibrary::GetWhiskerwoodModsDirectory()
     FString ModsDir = FPaths::Combine(LocalAppData, TEXT("Whiskerwood"), TEXT("Saved"), TEXT("mods"));
     FPaths::NormalizeDirectoryName(ModsDir);
     return ModsDir;
-#else
-    // In non-editor builds, either return empty or the same value
-    // (but these functions are meta=(DevelopmentOnly) anyway).
-    return FString();
-#endif
+
 }
 
 bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodFile(const FString& FilePath)
 {
-#if WITH_EDITOR
+
     FString NormalizedPath;
     if (!IsWhiskerwoodSafeDeletePath(FilePath, NormalizedPath))
     {
@@ -107,16 +103,12 @@ bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodFile(const FString& FilePath)
     }
 
     return bDeleted;
-#else
-    UE_LOG(LogTemp, Warning,
-        TEXT("DeleteWhiskerwoodFile is editor-only and does nothing in non-editor builds."));
-    return false;
-#endif
+
 }
 
 bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodDirectory(const FString& DirectoryPath)
 {
-#if WITH_EDITOR
+
     FString NormalizedPath;
     if (!IsWhiskerwoodSafeDeletePath(DirectoryPath, NormalizedPath))
     {
@@ -149,16 +141,12 @@ bool UWhiskerwoodFileIOLibrary::DeleteWhiskerwoodDirectory(const FString& Direct
     }
 
     return bDeleted;
-#else
-    UE_LOG(LogTemp, Warning,
-        TEXT("DeleteWhiskerwoodDirectory is editor-only and does nothing in non-editor builds."));
-    return false;
-#endif
+
 }
 
 bool UWhiskerwoodFileIOLibrary::EnsureWhiskerwoodDirectory(const FString& DirectoryPath)
 {
-#if WITH_EDITOR
+
     FString NormalizedPath;
     if (!IsWhiskerwoodSafeDestPath(DirectoryPath, NormalizedPath))
     {
@@ -191,16 +179,12 @@ bool UWhiskerwoodFileIOLibrary::EnsureWhiskerwoodDirectory(const FString& Direct
     }
 
     return bCreated;
-#else
-    UE_LOG(LogTemp, Warning,
-        TEXT("EnsureWhiskerwoodDirectory is editor-only and does nothing in non-editor builds."));
-    return false;
-#endif
+
 }
 
 bool UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(const FString& SourceFilePath, const FString& DestFilePath, bool bOverwriteExisting)
 {
-#if WITH_EDITOR
+
     IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 
     FString NormalizedSource = SourceFilePath;
@@ -266,16 +250,12 @@ bool UWhiskerwoodFileIOLibrary::CopyWhiskerwoodFile(const FString& SourceFilePat
     }
 
     return bCopied;
-#else
-    UE_LOG(LogTemp, Warning,
-        TEXT("CopyWhiskerwoodFile is editor-only and does nothing in non-editor builds."));
-    return false;
-#endif
+
 }
 
 bool UWhiskerwoodFileIOLibrary::WriteWhiskerwoodTextFile(const FString& FilePath, const FString& Text, bool bAllowOverwrite)
 {
-#if WITH_EDITOR
+
     FString NormalizedPath;
     if (!IsWhiskerwoodSafeDestPath(FilePath, NormalizedPath))
     {
@@ -325,9 +305,5 @@ bool UWhiskerwoodFileIOLibrary::WriteWhiskerwoodTextFile(const FString& FilePath
     }
 
     return bSaved;
-#else
-    UE_LOG(LogTemp, Warning,
-        TEXT("WriteWhiskerwoodTextFile is editor-only and does nothing in non-editor builds."));
-    return false;
-#endif
+
 }
